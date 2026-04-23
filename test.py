@@ -3,6 +3,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+import random
 import time
 import pickle
 import os
@@ -19,10 +20,28 @@ class FacebookBot:
         self.driver = webdriver.Chrome()
         self.cookie_file = "fb_cookies.pkl"
 
-    def is_logged_in(self):
+    def is_logged_in(self, timeout=5):
+        driver = self.driver
+
         try:
-            self.driver.find_element(By.XPATH, "//div[@role='feed']")
-            return True
+            # Wait for either login form OR logged-in UI
+            WebDriverWait(driver, timeout).until(
+                lambda d: (
+                    d.find_elements(By.NAME, "email") or   # login form
+                    d.find_elements(By.XPATH, "//div[@role='navigation']")
+                )
+            )
+
+            # If login form exists → not logged in
+            if driver.find_elements(By.NAME, "email"):
+                return False
+
+            # If navigation exists → logged in
+            if driver.find_elements(By.XPATH, "//div[@role='navigation']"):
+                return True
+
+            return False
+
         except:
             return False
 
@@ -56,27 +75,27 @@ class FacebookBot:
     # -------------------------
     # STEP 1: Manual login + save cookies
     # -------------------------
-    def login_and_save_cookies(self):
+    def login_and_save_cookies(self, timeout=120):
         driver = self.driver
         driver.get("https://www.facebook.com/")
 
-        time.sleep(2)
+        print("🔐 Please log in manually in the browser...")
 
-        email_input = driver.find_element(By.NAME, "email")
-        password_input = driver.find_element(By.NAME, "pass")
+        start = time.time()
 
-        email_input.send_keys(self.email)
-        password_input.send_keys(self.password)
-        password_input.send_keys(Keys.RETURN)
+        while time.time() - start < timeout:
+            if self.is_logged_in():
+                cookies = driver.get_cookies()
+                with open(self.cookie_file, "wb") as f:
+                    pickle.dump(cookies, f)
 
-        print("👉 Complete 2FA if required...")
+                print("✅ Logged in & cookies saved!")
+                return True
 
-        # Save cookies
-        cookies = driver.get_cookies()
-        with open(self.cookie_file, "wb") as f:
-            pickle.dump(cookies, f)
+            time.sleep(2)
 
-        print("✅ Cookies saved!")
+        print("❌ Timeout: Login not detected")
+        return False
 
     # -------------------------
     # STEP 2: Load cookies
@@ -85,7 +104,16 @@ class FacebookBot:
         driver = self.driver
         driver.get("https://www.facebook.com/")
 
-        cookies = pickle.load(open(self.cookie_file, "rb"))
+        # ❗ Check if cookie file exists
+        if not os.path.exists(self.cookie_file):
+            print("⚠️ No cookie file found")
+            return False
+
+        try:
+            cookies = pickle.load(open(self.cookie_file, "rb"))
+        except Exception as e:
+            print("❌ Failed to load cookies:", e)
+            return False
 
         for cookie in cookies:
             cookie.pop("sameSite", None)
@@ -101,11 +129,6 @@ class FacebookBot:
         if not self.is_logged_in():
             print("⚠️ Not fully logged in")
             self.handle_checkpoint()
-
-        # Final check
-        if "login" in driver.current_url:
-            print("❌ Still not logged in")
-            return False
 
         print("✅ Logged in (after checkpoint if needed)")
         return True
@@ -152,22 +175,30 @@ class FacebookBot:
         collected = set()
         seen_links = set()
 
-        last_count = 0
+        last_index = 0
+        xpath = "//div[@role='listitem']//a[@role='link']"
 
         for i in range(max_scroll):
             print(f"🔄 Scroll {i+1}")
 
-            elements = driver.find_elements(
-                By.XPATH,
-                "//div[@role='listitem']//a[@role='link']"
-            )
+            elements = driver.find_elements(By.XPATH, xpath)
 
-            new_count = 0
+            if not elements:
+                print("⚠️ No elements found")
+                break
 
-            for e in elements:
+            old_last = elements[-1].get_attribute("href")
+
+            new_elements = elements[last_index:]
+            last_index = len(elements)
+
+            for e in new_elements:
                 link = e.get_attribute("href")
 
                 if not link or link in seen_links:
+                    continue
+
+                if any(x in link for x in ["photo", "story", "reel", "watch"]):
                     continue
 
                 seen_links.add(link)
@@ -175,23 +206,21 @@ class FacebookBot:
                 user_id = self.extract_user_id(link)
                 if user_id:
                     collected.add(user_id)
-                    new_count += 1
-
-            print(f"➕ New this round: {new_count}")
-            print(f"✅ Total: {len(collected)}")
 
             driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
 
-
-
-            if len(collected) == last_count:
-                print("⛔ No new users → stopping")
+            try:
+                WebDriverWait(driver, 10).until(
+                    lambda d: (
+                        elems := d.find_elements(By.XPATH, xpath)
+                    ) and elems[-1].get_attribute("href") != old_last
+                )
+            except:
+                print("⚠️ No new content → stop scrolling")
                 break
 
-            last_count = len(collected)
-
-
-        return list(collected)
+        print(len(collected))
+        return collected
 
     def perform_search(self):
         driver = self.driver
@@ -209,11 +238,15 @@ class FacebookBot:
         members_tab.click()
         time.sleep(3)
 
-        # 👇 Collect during scroll
         users = self.collect_members()
 
-        for u in users:
-            print(u)
+        file_path = "users.txt"
+
+        with open(file_path, "w", encoding="utf-8") as f:
+            for u in users:
+                f.write(f"{u}\n")
+
+        print(f"✅ Saved {len(users)} users to {file_path}")
 
     def close(self):
         self.driver.quit()
