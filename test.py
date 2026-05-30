@@ -6,7 +6,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, NoSuchElementException, ElementClickInterceptedException
 from openpyxl import Workbook
-from queue import Queue
+from queue import Queue, Empty
 import threading
 import random
 import time
@@ -34,8 +34,14 @@ class FacebookBot:
         if optimized:
             options.add_argument("--headless")
             options.add_argument("--disable-gpu")
-            options.add_argument("--no-sandbox")        
-        
+            options.add_argument("--no-sandbox")
+
+        prefs = {
+            "profile.managed_default_content_settings.images": 2
+        }
+
+        options.add_experimental_option("prefs", prefs)     
+        options.page_load_strategy = "eager"
         options.add_argument("--disable-notifications")
 
         driver = webdriver.Chrome(options=options)
@@ -98,6 +104,15 @@ class FacebookBot:
     # -------------------------
     # STEP 1: Manual login + save cookies
     # -------------------------
+    def load_cookie_data(path):
+        if not os.path.exists(path):
+            return None
+        try:
+            with open(path, "rb") as f:
+                return pickle.load(f)
+        except:
+            return None
+
     def login_and_save_cookies(self, timeout=120):
         driver = self.driver
         driver.get("https://www.facebook.com/")
@@ -154,6 +169,8 @@ class FacebookBot:
             self.handle_checkpoint()
 
         print("✅ Logged in (after checkpoint if needed)")
+
+        time.sleep(random.uniform(0.5, 1))
         return True
 
     # -------------------------
@@ -268,11 +285,21 @@ class FacebookBot:
 
     
     # Gửi tin
-    def send_message_via_uid(self, uid, content):
-        def close_chat():
-            try:
-                print("[+] Đang đóng chat...")
+    def log_time(self, label, start):
+        print(
+            f"[TIME] {label}: "
+            f"{time.perf_counter() - start:.3f}s"
+        )
 
+    def send_message_via_uid_logged(self, uid, content):
+        total_start = time.perf_counter()
+
+        wait = WebDriverWait(self.driver, 20)
+
+        def close_chat():
+            t = time.perf_counter()
+
+            try:
                 close_button = wait.until(
                     EC.element_to_be_clickable((
                         By.XPATH,
@@ -284,6 +311,180 @@ class FacebookBot:
 
                 close_button.click()
 
+            except Exception as e:
+                print(
+                    f"[!] Close chat failed UID={uid}: {e}"
+                )
+
+            finally:
+                self.log_time("CLOSE_CHAT", t)
+
+        def find_message_button():
+            t = time.perf_counter()
+
+            try:
+                message_button = WebDriverWait(
+                    self.driver,
+                    2
+                ).until(
+                    EC.element_to_be_clickable((
+                        By.XPATH,
+                        '//div[@aria-label="Message" or @aria-label="Nhắn tin"]'
+                    ))
+                )
+
+                print("[+] Đã tìm thấy nút Message")
+
+                return message_button
+
+            except TimeoutException as e:
+                raise Exception(
+                    f"[MESSAGE_BUTTON_TIMEOUT] UID={uid}"
+                ) from e
+
+            finally:
+                self.log_time("FIND_MESSAGE_BUTTON", t)
+
+        def find_chatbox():
+            t = time.perf_counter()
+
+            try:
+                chatbox_xpath = (
+                    '//div[contains(@aria-label, "Write to")]'
+                )
+
+                chatbox = WebDriverWait(
+                    self.driver,
+                    2
+                ).until(
+                    EC.presence_of_element_located(
+                        (By.XPATH, chatbox_xpath)
+                    )
+                )
+
+                print("[+] Đã tìm thấy chatbox")
+
+                return chatbox
+
+            except TimeoutException as e:
+                close_chat()
+
+                raise Exception(
+                    f"[CHATBOX_TIMEOUT] UID={uid}"
+                ) from e
+
+            finally:
+                self.log_time("FIND_CHATBOX", t)
+
+        try:
+            # =========================
+            # OPEN PROFILE
+            # =========================
+            t = time.perf_counter()
+
+            print(f"\n[+] Đang mở trang cá nhân UID: {uid}")
+
+            user_url = f"https://www.facebook.com/{uid}"
+
+            self.driver.get(user_url)
+
+            self.log_time("OPEN_PROFILE", t)
+
+            # =========================
+            # FIND MESSAGE BUTTON
+            # =========================
+            message_button = find_message_button()
+
+            # =========================
+            # CLICK MESSAGE BUTTON
+            # =========================
+            t = time.perf_counter()
+
+            self.driver.execute_script(
+                "arguments[0].scrollIntoView({block: 'center'});",
+                message_button
+            )
+
+            message_button.click()
+
+            self.log_time("CLICK_MESSAGE_BUTTON", t)
+
+            # =========================
+            # FIND CHATBOX
+            # =========================
+            chatbox = find_chatbox()
+
+            # =========================
+            # INPUT MESSAGE
+            # =========================
+            t = time.perf_counter()
+
+            time.sleep(random.uniform(0.2, 0.5))
+
+            chatbox.send_keys(content)
+
+
+            self.log_time("INPUT_MESSAGE", t)
+
+            # =========================
+            # SEND MESSAGE
+            # =========================
+            t = time.perf_counter()
+
+
+            time.sleep(random.uniform(0.5, 1.5))
+
+            self.log_time("SEND_MESSAGE", t)
+
+            # =========================
+            # CLEAR CHATBOX
+            # =========================
+            t = time.perf_counter()
+
+            try:
+                chatbox.send_keys(Keys.CONTROL, "a")
+                chatbox.send_keys(Keys.DELETE)
+            except Exception as e:
+                print(
+                    f"[!] Clear chatbox failed UID={uid}: {e}"
+                )
+
+            self.log_time("CLEAR_CHATBOX", t)
+
+            # =========================
+            # CLOSE CHAT
+            # =========================
+            close_chat()
+
+            print(
+                f"[TOTAL] UID={uid}: "
+                f"{time.perf_counter() - total_start:.3f}s"
+            )
+
+            return True
+
+        except Exception as e:
+            print(f"[❌] {e}")
+
+            print(
+                f"[TOTAL] UID={uid}: "
+                f"{time.perf_counter() - total_start:.3f}s"
+            )
+
+            return False
+
+    def send_message_via_uid(self, uid, content):
+        def close_chat():
+            try:
+                print("[+] Đang đóng chat...")
+
+                close_button = self.driver.find_element(
+                    By.XPATH,
+                    '//div[@aria-label="Close chat"]'
+                )
+
+                close_button.click()
+
                 print("[+] Đã đóng chat")
 
             except Exception as e:
@@ -291,31 +492,9 @@ class FacebookBot:
                     f"[!] Close chat failed UID={uid}: {e}"
                 )
 
-
-        wait = WebDriverWait(self.driver, 20)
-
-        try:
-            # =========================
-            # OPEN PROFILE
-            # =========================
+        def find_message_button():
             try:
-                print(f"\n[+] Đang mở trang cá nhân UID: {uid}")
-
-                user_url = f"https://www.facebook.com/messages/t/{uid}"
-                self.driver.get(user_url)
-
-            except Exception as e:
-                raise Exception(
-                    f"[OPEN_PROFILE_FAILED] UID={uid}"
-                ) from e
-
-            # =========================
-            # FIND MESSAGE BUTTON
-            # =========================
-            try:
-                print("[+] Đang tìm nút 'Nhắn tin'...")
-
-                message_button = wait.until(
+                message_button = WebDriverWait(self.driver, 2).until(
                     EC.element_to_be_clickable((
                         By.XPATH,
                         '//div[@aria-label="Message" or @aria-label="Nhắn tin"]'
@@ -328,18 +507,77 @@ class FacebookBot:
                 raise Exception(
                     f"[MESSAGE_BUTTON_TIMEOUT] UID={uid}"
                 ) from e
-
+            
             except NoSuchElementException as e:
                 raise Exception(
                     f"[MESSAGE_BUTTON_NOT_FOUND] UID={uid}"
                 ) from e
+            
+            return message_button
+            
+        def find_chatbox():
+            try:
+                chatbox_xpath = (
+                    '//div[contains(@aria-label, "Write to")]'
+                )
 
+                chatbox = WebDriverWait(self.driver, 3).until(
+                    EC.presence_of_element_located(
+                        (By.XPATH, chatbox_xpath)
+                    )
+                )
+
+                print("[+] Đã tìm thấy chatbox")
+
+            except TimeoutException as e:
+                close_chat()
+                raise Exception(
+                    f"[CHATBOX_TIMEOUT] UID={uid}"
+                ) from e
+            
+            return chatbox
+
+        def clear_chatbox():
+            try:
+                print("[+] Đang clear chatbox...")
+
+                chatbox.send_keys(Keys.CONTROL, "a")
+                chatbox.send_keys(Keys.DELETE)
+
+                print("[+] Đã clear chatbox")
+
+            except Exception as e:
+                print(
+                    f"[!] Clear chatbox failed UID={uid}: {e}"
+                )
+
+        wait = WebDriverWait(self.driver, 20)
+
+        try:
+            # =========================
+            # OPEN PROFILE
+            # =========================
+            try:
+                print(f"\n[+] Đang mở trang cá nhân UID: {uid}")
+
+                user_url = f"https://www.facebook.com/{uid}"
+                self.driver.get(user_url)
+
+            except Exception as e:
+                raise Exception(
+                    f"[OPEN_PROFILE_FAILED] UID={uid}"
+                ) from e
+
+            # =========================
+            # FIND MESSAGE BUTTON
+            # =========================
+            message_button = find_message_button()
+
+            
             # =========================
             # CLICK MESSAGE BUTTON
             # =========================
             try:
-                print("[+] Đang click nút Message...")
-
                 self.driver.execute_script(
                     "arguments[0].scrollIntoView({block: 'center'});",
                     message_button
@@ -362,27 +600,7 @@ class FacebookBot:
             # =========================
             # FIND CHATBOX
             # =========================
-            try:
-                print("[+] Đang đợi chatbox...")
-
-                chatbox_xpath = (
-                    '//div[contains(@aria-label, "Write to")]'
-                )
-
-                chatbox = wait.until(
-                    EC.presence_of_element_located((
-                        By.XPATH,
-                        chatbox_xpath
-                    ))
-                )
-
-                print("[+] Đã tìm thấy chatbox")
-
-            except TimeoutException as e:
-                
-                raise Exception(
-                    f"[CHATBOX_TIMEOUT] UID={uid}"
-                ) from e
+            chatbox = find_chatbox()
 
             # =========================
             # INPUT MESSAGE
@@ -390,8 +608,7 @@ class FacebookBot:
             try:
                 print(f"[+] Đang nhập tin nhắn: '{content}'")
 
-                time.sleep(random.uniform(1.5, 3))
-
+                time.sleep(random.uniform(0.2, 0.5))
                 chatbox.send_keys(content)
 
                 print("[+] Đã nhập tin nhắn")
@@ -401,30 +618,6 @@ class FacebookBot:
                     f"[INPUT_MESSAGE_FAILED] UID={uid}"
                 ) from e
 
-            # =========================
-            # FIND SEND BUTTON
-            # =========================
-            try:
-                print("[+] Đang tìm nút Gửi...")
-
-                nut_gui_xpath = (
-                    '//div[@aria-label="Press enter to send" '
-                    'or @aria-label="Nhấn enter để gửi"]'
-                )
-
-                send_button = wait.until(
-                    EC.element_to_be_clickable((
-                        By.XPATH,
-                        nut_gui_xpath
-                    ))
-                )
-
-                print("[+] Đã tìm thấy nút Gửi")
-
-            except TimeoutException as e:
-                raise Exception(
-                    f"[SEND_BUTTON_TIMEOUT] UID={uid}"
-                ) from e
 
             # =========================
             # SEND MESSAGE
@@ -434,6 +627,7 @@ class FacebookBot:
 
                 # send_button.click()
                 #chatbox.click(Keys.ENTER)
+                time.sleep(random.uniform(0.5, 1.5))
 
                 print("[🔑] Gửi thành công!")
 
@@ -442,25 +636,9 @@ class FacebookBot:
                     f"[SEND_MESSAGE_FAILED] UID={uid}"
                 ) from e
 
-            # =========================
-            # CLEAR CHATBOX
-            # =========================
-            try:
-                print("[+] Đang clear chatbox...")
 
-                chatbox.send_keys(Keys.CONTROL, "a")
-                chatbox.send_keys(Keys.DELETE)
+            clear_chatbox()
 
-                print("[+] Đã clear chatbox")
-
-            except Exception as e:
-                print(
-                    f"[!] Clear chatbox failed UID={uid}: {e}"
-                )
-
-            # =========================
-            # CLOSE CHAT
-            # =========================
             close_chat()
 
             return True
@@ -468,131 +646,7 @@ class FacebookBot:
         except Exception as e:
             print(f"[❌] {e}")
             return False
-        
-    def send_message_via_uid_direct(self, uid, content):
-        wait = WebDriverWait(self.driver, 20)
-
-        try:
-            # =========================
-            # OPEN PROFILE
-            # =========================
-            try:
-                print(f"\n[+] Đang mở trang cá nhân UID: {uid}")
-
-                user_url = f"https://www.facebook.com/messages/t/{uid}"
-                self.driver.get(user_url)
-
-            except Exception as e:
-                raise Exception(
-                    f"[OPEN_PROFILE_FAILED] UID={uid}"
-                ) from e
-
-
-            # =========================
-            # FIND CHATBOX
-            # =========================
-            try:
-                print("[+] Checking Continue button...")
-
-                if not self.one_time_code_exist:
-                    try:
-                        input("xx")
-                        pin_check = WebDriverWait(self.driver, 3).until(
-                            EC.presence_of_element_located((
-                                By.XPATH,
-                                '//input[@autocomplete="one-time-code"]'
-                            ))
-                        )
-
-                        print('[+] Found PIN input')
-
-                        pin_check.send_keys('100903')
-                        time.sleep(3)
-                        self.one_time_code_exist = True
-
-                    except:
-                        print('[-] PIN input not found')
-                        self.one_time_code_exist = True
-                
-
-                try:
-                    continue_xpath = (
-                        '//div[@aria-label="Continue"]'
-                    )
-
-                    continue_button = WebDriverWait(self.driver, 3).until(
-                        EC.element_to_be_clickable((
-                            By.XPATH,
-                            continue_xpath
-                        ))
-                    )
-
-                    continue_button.click()
-                    time.sleep(1)
-                
-                except Exception as e:
-                    print("Found no Continue")
-
-                print("[+] Waiting for chatbox...")
-
-                chatbox_xpath = (
-                    '//div[contains(@aria-label, "Write to")]'
-                )
-
-                chatbox = wait.until(
-                    EC.presence_of_element_located((
-                        By.XPATH,
-                        chatbox_xpath
-                    ))
-                )
-
-                print("[+] Found chatbox")
-
-            except TimeoutException as e:
-                raise Exception(
-                    f"[CHATBOX_TIMEOUT] UID={uid}"
-                ) from e
-
-            # =========================
-            # INPUT MESSAGE
-            # =========================
-            try:
-                print(f"[+] Đang nhập tin nhắn: '{content}'")
-
-                time.sleep(random.uniform(1.5, 3))
-
-                chatbox.send_keys(content)
-
-                print("[+] Đã nhập tin nhắn")
-
-            except Exception as e:
-                raise Exception(
-                    f"[INPUT_MESSAGE_FAILED] UID={uid}"
-                ) from e
-
-
-            # =========================
-            # SEND MESSAGE
-            # =========================
-            try:
-                print("[+] Đang gửi tin nhắn...")
-
-                # send_button.click()
-                #chatbox.click(Keys.ENTER)
-
-                print("[🔑] Gửi thành công!")
-
-            except Exception as e:
-                raise Exception(
-                    f"[SEND_MESSAGE_FAILED] UID={uid}"
-                ) from e
-
-            return True
-
-        except Exception as e:
-            print(f"[❌] {e}")
-            return False
-
+    
 
 def create_excel_file(data, headers, filename="results.xlsx"):
     wb = Workbook()
@@ -626,95 +680,24 @@ uids = [
     '100068953794888'
 ]
 
-# Queue chứa UID
-uid_queue = Queue()
-data = []
-for uid in uids:
-    uid_queue.put(uid)
-
-
-# Tạo event global
-login_done = threading.Event()
-
-
-def worker(worker_id):
-
-    bot = FacebookBot('0767214918', 'LProtogen03!')
-
-    if worker_id == 1:
-
-        print(f'[Worker {worker_id}] Login first...')
-
-        bot.ensure_login()
-
-        # Xử lý UID đầu tiên
-        uid = uid_queue.get_nowait()
-
-        result = bot.send_message_via_uid_direct(
-            uid,
-            'Hello'
-        )
-
-        data.append([uid, result])
-
-        print(f'[+] First UID done: {uid}')
-
-        uid_queue.task_done()
-
-        # Báo cho main thread biết đã xong
-        login_done.set()
-
-    while not uid_queue.empty():
-
-        try:
-            uid = uid_queue.get_nowait()
-
-        except:
-            break
-
-        try:
-            print(f'Worker {worker_id} sending to {uid}')
-
-            result = bot.send_message_via_uid_direct(
-                uid,
-                'Hello'
-            )
-
-            data.append([uid, result])
-
-        except Exception as e:
-            print(f'Error {uid}: {e}')
-
-        finally:
-            uid_queue.task_done()
-
-    bot.driver.quit()
+email = 'gurasyn@gmail.com'
+password = 'saile123456!'
 
 
 if __name__ == "__main__":
-    # bot = FacebookBot('0767214918', 'LProtogen03!')
-
-    # bot.ensure_login()
-
+    bot = FacebookBot(email, password)
+    bot.ensure_login()
+    data = []
     start = time.perf_counter()
-    # for uid in uids:
-    #     bot.send_message_via_uid_direct(uid, 'Hello')
-    # 3 browser chạy song song
-    with ThreadPoolExecutor(max_workers=3) as executor:
 
-        # Worker đầu tiên chạy trước
-        first_worker = executor.submit(worker, 1)
+    input("XX")
 
-        # Đợi worker 1 xử lý xong phase đầu
-        login_done.wait()
-
-        print('[+] Starting other workers...')
-
-        # Worker còn lại chạy sau
-        for i in range(2, 4):
-            executor.submit(worker, i)
+    content = 'Hello World!'
+    for uid in uids:
+        result = bot.send_message_via_uid(uid, content)
+        data.append([uid, result])
 
     end = time.perf_counter()
-    #create_excel_file(data, ['ID', 'Result'])
+    create_excel_file(data, ['ID', 'Result'])
 
     print(f'Total time: {end - start:.2f} seconds')
