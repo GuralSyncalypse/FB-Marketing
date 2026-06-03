@@ -40,14 +40,26 @@ class FacebookBot:
             "profile.managed_default_content_settings.images": 2
         }
 
-        options.add_experimental_option("prefs", prefs)     
-        options.page_load_strategy = "eager"
+        #options.add_experimental_option("prefs", prefs)     
+        #options.page_load_strategy = "eager"
         options.add_argument("--disable-notifications")
 
         driver = webdriver.Chrome(options=options)
         driver.maximize_window()
 
         self.driver = driver
+
+    def save_cookies(self):
+        try:
+            with open(self.cookie_file, "wb") as f:
+                pickle.dump(self.driver.get_cookies(), f)
+
+            print("🍪 Cookies updated")
+            return True
+
+        except Exception as e:
+            print(f"❌ Save cookies failed: {e}")
+            return False
 
     def is_logged_in(self, timeout=5):
         driver = self.driver
@@ -75,43 +87,31 @@ class FacebookBot:
             return False
 
     def handle_checkpoint(self):
-        driver = self.driver
-        time.sleep(3)
+        try:
+            btn = WebDriverWait(self.driver, 10).until(
+                EC.element_to_be_clickable(
+                    (
+                        By.XPATH,
+                        "//*[@role='button' and contains(., 'Continue')]"
+                    )
+                )
+            )
 
-        # Click Continue
-        btn = driver.find_element(
-            By.XPATH,
-            "//*[@role='button' and contains(., 'Continue')]"
-        )
-        btn.click()
+            btn.click()
 
+            password_input = WebDriverWait(self.driver, 10).until(
+                EC.presence_of_element_located((By.NAME, "pass"))
+            )
 
-        # Re-enter password
-        password_input = WebDriverWait(driver, 10).until(
-            EC.presence_of_element_located((By.NAME, "pass"))
-        )
-        if password_input:
             password_input.clear()
             password_input.send_keys(self.password)
             password_input.send_keys(Keys.RETURN)
 
-            time.sleep(2)
+            return True
 
-            print("🔐 Re-entered password")
-
-        
-
-    # -------------------------
-    # STEP 1: Manual login + save cookies
-    # -------------------------
-    def load_cookie_data(path):
-        if not os.path.exists(path):
-            return None
-        try:
-            with open(path, "rb") as f:
-                return pickle.load(f)
-        except:
-            return None
+        except Exception as e:
+            print(f"❌ Checkpoint failed: {e}")
+            return False
 
     def login_and_save_cookies(self, timeout=120):
         driver = self.driver
@@ -135,43 +135,55 @@ class FacebookBot:
         print("❌ Timeout: Login not detected")
         return False
 
-    # -------------------------
-    # STEP 2: Load cookies
-    # -------------------------
     def login_with_cookies(self):
         driver = self.driver
-        driver.get("https://www.facebook.com/")
 
-        # ❗ Check if cookie file exists
         if not os.path.exists(self.cookie_file):
-            print("⚠️ No cookie file found")
+            print("⚠️ Cookie file not found")
             return False
 
         try:
-            cookies = pickle.load(open(self.cookie_file, "rb"))
+            with open(self.cookie_file, "rb") as f:
+                cookies = pickle.load(f)
         except Exception as e:
-            print("❌ Failed to load cookies:", e)
+            print(f"❌ Failed to load cookies: {e}")
             return False
+
+        driver.get("https://www.facebook.com/")
+
+        success_count = 0
 
         for cookie in cookies:
             cookie.pop("sameSite", None)
+
             try:
                 driver.add_cookie(cookie)
-            except:
+                success_count += 1
+            except Exception:
                 pass
 
+        print(f"🍪 Loaded {success_count}/{len(cookies)} cookies")
+
         driver.refresh()
-        time.sleep(3)
 
-        # 👇 HANDLE CHECKPOINT HERE
-        if not self.is_logged_in():
-            print("⚠️ Not fully logged in")
+        # Login thành công ngay
+        if self.is_logged_in():
+            print("✅ Logged in via cookies")
+            self.save_cookies()
+            return True
+
+        try:
             self.handle_checkpoint()
+        except Exception as e:
+            print(f"❌ Checkpoint error: {e}")
 
-        print("✅ Logged in (after checkpoint if needed)")
+        if self.is_logged_in():
+            print("✅ Logged in after checkpoint")
+            self.save_cookies()
+            return True
 
-        time.sleep(random.uniform(0.5, 1))
-        return True
+        print("❌ Login failed")
+        return False
 
     # -------------------------
     # STEP 3: Smart login
@@ -182,7 +194,6 @@ class FacebookBot:
         if not success:
             print("🔐 Falling back to manual login...")
             self.login_and_save_cookies()
-
 
     def extract_user_id(self, link):
         if not link:
@@ -551,8 +562,6 @@ class FacebookBot:
                     f"[!] Clear chatbox failed UID={uid}: {e}"
                 )
 
-        wait = WebDriverWait(self.driver, 20)
-
         try:
             # =========================
             # OPEN PROFILE
@@ -646,6 +655,86 @@ class FacebookBot:
         except Exception as e:
             print(f"[❌] {e}")
             return False
+
+    def scrape_joined_groups(self):
+        """
+        Hàm cào danh sách Group đã tham gia từ trang /groups/joins
+        Chỉ tập trung tìm kiếm trong vùng nội dung chính (role="main")
+        """
+        print("🔄 Đang truy cập trang danh sách Nhóm đã tham gia...")
+        self.driver.get("https://www.facebook.com/groups/joins")
+        time.sleep(4) # Đợi trang tải các group đầu tiên
+
+        # Vòng lặp cuộn trang để tải hết danh sách Group
+        last_height = self.driver.execute_script("return document.body.scrollHeight")
+        scroll_attempts = 10 
+        
+        for i in range(scroll_attempts):
+            print(f"📜 Đang cuộn trang lần {i+1}/{scroll_attempts}...")
+            self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+            time.sleep(3) 
+            
+            new_height = self.driver.execute_script("return document.body.scrollHeight")
+            if new_height == last_height:
+                print("🛑 Đã cuộn đến cuối danh sách hoặc không có dữ liệu mới.")
+                break
+            last_height = new_height
+
+        print("🔍 Bắt đầu trích xuất dữ liệu Group từ vùng nội dung chính...")
+        joined_groups = []
+
+        try:
+            # 1. Định vị vùng nội dung chính của trang Facebook
+            main_container = self.driver.find_element(By.XPATH, "//*[@role='main']")
+            
+            # 2. Chỉ tìm các khối group item NẰM TRONG vùng role="main" này
+            group_items = main_container.find_elements(By.XPATH, ".//div[@role='listitem']")
+            print(f"📊 Phát hiện {len(group_items)} khối group item trong khu vực nội dung chính.")
+
+            for item in group_items:
+                try:
+                    # 3. Tìm thẻ <a> chứa link nhóm bên trong item
+                    a_tag = item.find_element(By.XPATH, ".//a[contains(@href, '/groups/')]")
+                    url = a_tag.get_attribute("href")
+                    
+                    # 4. Lấy tên Group (Xử lý fallback nếu thẻ a đầu tiên là ảnh/trống chữ)
+                    title = a_tag.text.strip()
+                    if not title:
+                        all_links = item.find_elements(By.XPATH, ".//a[contains(@href, '/groups/')]")
+                        for link in all_links:
+                            if link.text.strip():
+                                title = link.text.strip()
+                                break
+
+                    if title and url:
+                        # Trích xuất ID/Alias từ URL
+                        match = re.search(r'/groups/([^/]+)', url)
+                        group_id = match.group(1) if match else None
+                        
+                        # Loại bỏ các sub-page mặc định
+                        if not group_id or group_id in ["joins", "feed", "discover", "create"]:
+                            continue
+
+                        group_info = {
+                            "group_name": title,
+                            "group_id": group_id,
+                            "group_url": f"https://www.facebook.com/groups/{group_id}/"
+                        }
+                        
+                        # Kiểm tra trùng lặp theo ID
+                        if not any(g['group_id'] == group_id for g in joined_groups):
+                            print(f"✅ Đã tìm thấy: {title} (ID: {group_id})")
+                            joined_groups.append(group_info)
+                            
+                except Exception:
+                    continue
+
+        except Exception as e:
+            print(f"❌ Không tìm thấy vùng nội dung chính (role='main'). Lỗi: {e}")
+            return []
+
+        print(f"🎉 Đã lọc và trích xuất thành công {len(joined_groups)} nhóm đã tham gia.")
+        return joined_groups
     
 
 def create_excel_file(data, headers, filename="results.xlsx"):
@@ -669,7 +758,6 @@ def create_excel_file(data, headers, filename="results.xlsx"):
 # -------------------------
 uids = [
     'giang.tien.trung',
-    '61579574484979',
     '100005598214623',
     '100085462167190',
     '100005461662862',
@@ -683,21 +771,23 @@ uids = [
 email = 'gurasyn@gmail.com'
 password = 'saile123456!'
 
-
-if __name__ == "__main__":
-    bot = FacebookBot(email, password)
-    bot.ensure_login()
-    data = []
+def main():
     start = time.perf_counter()
 
-    input("XX")
+    
+    bot = FacebookBot(email, password)
+    bot.ensure_login()
 
-    content = 'Hello World!'
-    for uid in uids:
-        result = bot.send_message_via_uid(uid, content)
-        data.append([uid, result])
+    print(bot.scrape_joined_groups())
+
+    input("")
+
+    bot.close()
+
 
     end = time.perf_counter()
-    create_excel_file(data, ['ID', 'Result'])
-
     print(f'Total time: {end - start:.2f} seconds')
+
+
+if __name__ == "__main__":
+    main()
