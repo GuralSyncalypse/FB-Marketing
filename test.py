@@ -61,30 +61,24 @@ class FacebookBot:
             print(f"❌ Save cookies failed: {e}")
             return False
 
-    def is_logged_in(self, timeout=5):
+    def is_logged_in(self):
         driver = self.driver
+        print(driver.get_cookies())
+        cookies = {c["name"] for c in driver.get_cookies()}
 
-        try:
-            # Wait for either login form OR logged-in UI
-            WebDriverWait(driver, timeout).until(
-                lambda d: (
-                    d.find_elements(By.NAME, "email") or   # login form
-                    d.find_elements(By.XPATH, "//div[@role='navigation']")
-                )
-            )
-
-            # If login form exists → not logged in
-            if driver.find_elements(By.NAME, "email"):
-                return False
-
-            # If navigation exists → logged in
-            if driver.find_elements(By.XPATH, "//div[@role='navigation']"):
-                return True
-
+        print(cookies)
+        # Fast fail
+        if "c_user" not in cookies or "xs" not in cookies:
             return False
 
-        except:
-            return False
+        # Verify session
+        driver.get("https://www.facebook.com/me")
+
+        WebDriverWait(driver, 10).until(
+            lambda d: d.execute_script("return document.readyState") == "complete"
+        )
+
+        return True
 
     def handle_checkpoint(self):
         try:
@@ -149,20 +143,30 @@ class FacebookBot:
             print(f"❌ Failed to load cookies: {e}")
             return False
 
-        driver.get("https://www.facebook.com/")
+        self.driver.get("https://www.facebook.com")
+        time.sleep(2)        
 
-        success_count = 0
+        allowed = {
+            "name",
+            "value",
+            "domain",
+            "path",
+            "expiry",
+            "secure",
+            "httpOnly"
+        }
 
         for cookie in cookies:
-            cookie.pop("sameSite", None)
-
+            cookie = {k: v for k, v in cookie.items() if k in allowed}
             try:
-                driver.add_cookie(cookie)
-                success_count += 1
-            except Exception:
-                pass
-
-        print(f"🍪 Loaded {success_count}/{len(cookies)} cookies")
+                print(f"Adding {cookie}")
+                self.driver.add_cookie(cookie)
+            except:
+                print(f'Failed: {cookie}')
+        
+        # 3. Refresh để áp dụng Cookie và vào trạng thái Đăng Nhập
+        self.driver.refresh()
+        time.sleep(3)
 
         driver.refresh()
 
@@ -736,6 +740,52 @@ class FacebookBot:
         print(f"🎉 Đã lọc và trích xuất thành công {len(joined_groups)} nhóm đã tham gia.")
         return joined_groups
     
+    def create_post(self, img_paths=[]):
+        self.driver.get("https://www.facebook.com/me")
+        post_box_xpath = "//span[contains(text(),'mind') or contains(text(),'nghĩ gì') or contains(text(),'something') or contains(text(),'viết gì')]"
+
+
+        input()
+        post_box = self.driver.find_element(By.XPATH, post_box_xpath)
+        post_box.click()
+
+        time.sleep(2)
+
+
+        input()
+        composer = WebDriverWait(self.driver, 10).until(
+            EC.presence_of_element_located(
+                (By.XPATH, "//div[@role='dialog' and @aria-modal='true']")
+            )
+        )
+
+        print(composer.get_attribute("outerHTML")[:200])
+        # Cô lập Form
+        input()
+        editor = composer.find_element(
+            By.XPATH,
+            ".//div[@role='textbox']"
+        )
+
+        editor.click()
+        editor.send_keys("ABC!!!")
+
+        # Thêm ảnh
+        if not img_paths:
+            print("Không tìm thấy ảnh!")
+            return
+
+        valid_file = 'image/*,image/heif,image/heic,video/*,video/mp4,video/x-m4v,video/x-matroska,.mkv,.avi,.wmv,.mov,.flv,.webm,.3gp,.3g2,.mts,.m2ts,.vob,.divx,.f4v,.ogv'
+        file_input = composer.find_element(
+            By.XPATH,
+            f".//input[@accept='{valid_file}']"
+        )
+
+        for img_path in img_paths:
+            print(f"Thêm ảnh {img_path}")
+            file_input.send_keys(img_path)
+
+
 
 def create_excel_file(data, headers, filename="results.xlsx"):
     wb = Workbook()
@@ -778,7 +828,7 @@ def main():
     bot = FacebookBot(email, password)
     bot.ensure_login()
 
-    print(bot.scrape_joined_groups())
+    bot.create_post()
 
     input("")
 
