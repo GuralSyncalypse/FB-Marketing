@@ -488,10 +488,72 @@ class FacebookBot:
 
             return False
 
+
+    def type_content_to_editor(self, editor, content):
+        def insert_to_editor(editor, text):
+            """Bắn chữ/emoji an toàn qua JS"""
+            self.driver.execute_script("""
+                var element = arguments[0];
+                var text = arguments[1];
+                element.focus();
+                document.execCommand('insertText', false, text);
+                element.dispatchEvent(new Event('input', { bubbles: true }));
+            """, editor, text)
+        editor.click()
+        
+        # Tách chuỗi: Giữ riêng emoji và giữ riêng cả dấu xuống dòng \n
+        tokens = re.split(r'([\U00010000-\U0010FFFF]|\n)', content)
+        
+        current_chunk = ""
+        target_length = random.randint(15, 35) # Độ dài ký tự ngẫu nhiên cho mỗi cụm
+        
+        for token in tokens:
+            if not token:
+                continue
+                
+            # TRƯỜNG HỢP 1: Gặp dấu xuống dòng
+            if token == '\n':
+                if current_chunk:
+                    insert_to_editor(editor, current_chunk)
+                    current_chunk = ""
+                
+                # Ép ô chatbox xuống dòng bằng Shift + Enter
+                editor.send_keys(Keys.SHIFT + Keys.ENTER)
+                time.sleep(0.05)
+                target_length = random.randint(15, 35) # Reset độ dài ngẫu nhiên
+                continue
+                
+            # TRƯỜNG HỢP 2: Gặp Emoji
+            if re.match(r'[\U00010000-\U0010FFFF]', token):
+                # Nếu cụm chữ hiện tại + emoji này dài quá target, đẩy cụm cũ đi trước
+                if len(current_chunk) + 1 >= target_length:
+                    insert_to_editor(editor, current_chunk)
+                    current_chunk = token # Emoji sẽ mở đầu cho cụm mới
+                    target_length = random.randint(15, 35)
+                    time.sleep(random.uniform(0.1, 0.2))
+                else:
+                    current_chunk += token
+                continue
+                
+            # TRƯỜNG HỢP 3: Chữ thường
+            current_chunk += token
+            
+            # Nếu tích lũy đủ độ dài ngẫu nhiên thì đẩy vào ô chat
+            if len(current_chunk) >= target_length:
+                insert_to_editor(editor, current_chunk)
+                current_chunk = ""
+                target_length = random.randint(15, 35)
+                time.sleep(random.uniform(0.1, 0.2))
+                
+        # Đẩy nốt phần nội dung còn lại (nếu có)
+        if current_chunk:
+            insert_to_editor(editor, current_chunk)
+
     def send_message_via_uid(self, uid, content):
         def close_chat():
             try:
                 print("[+] Đang đóng chat...")
+                input("")
 
                 close_button = self.driver.find_element(
                     By.XPATH,
@@ -622,9 +684,10 @@ class FacebookBot:
                 print(f"[+] Đang nhập tin nhắn: '{content}'")
 
                 time.sleep(random.uniform(0.2, 0.5))
-                chatbox.send_keys(content)
+                self.type_content_to_editor(chatbox, content)
 
                 print("[+] Đã nhập tin nhắn")
+                input("")
 
             except Exception as e:
                 raise Exception(
@@ -638,6 +701,7 @@ class FacebookBot:
             try:
                 print("[+] Đang gửi tin nhắn...")
 
+                input("")
                 # send_button.click()
                 #chatbox.click(Keys.ENTER)
                 time.sleep(random.uniform(0.5, 1.5))
@@ -807,16 +871,12 @@ def create_excel_file(data, headers, filename="results.xlsx"):
 # RUN
 # -------------------------
 uids = [
-    'giang.tien.trung',
-    '100005598214623',
-    '100085462167190',
-    '100005461662862',
-    '100090647756824',
-    '100073770454108',
-    '100005180834862',
-    '100091656182252',
-    '100068953794888'
+    '100013059309976',
+    '100001613059371',
+    '100008061095208',
+    '100009400587023'
 ]
+
 
 email = 'gurasyn@gmail.com'
 password = 'saile123456!'
@@ -828,12 +888,22 @@ def main():
     bot = FacebookBot(email, password)
     bot.ensure_login()
 
-    bot.create_post()
+    link = 'https://www.facebook.com/share/v/1HjuUTp6Po/'
+    content = f'''
+        🚀 THE WIN CITY - ĐÓN SÓNG HẠ TẦNG KHU TÂY SÀI GÒN
+
+        📈 Cú hích hạ tầng: Vành đai 3, 4, cao tốc TP.HCM - Mộc Bài thúc đẩy Đức Hòa - Hậu Nghĩa hóa "rồng" công nghiệp & logistics.
+        🏙️ The Win City: Tọa lạc vị trí chiến lược, đón trọn tiềm năng tăng trưởng liên vùng.
+
+        ▶️ Thông tin chi tiết: {link}
+    '''
+
+    for uid in uids:
+        bot.send_message_via_uid(uid, content)
 
     input("")
 
     bot.close()
-
 
     end = time.perf_counter()
     print(f'Total time: {end - start:.2f} seconds')

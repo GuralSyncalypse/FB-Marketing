@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hệ thống Gửi Tin Nhắn theo UID</title>
+    <style>
+        /* Reset CSS cơ bản */
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+
+        body {
+            background-color: #f4f6f9;
+            color: #333;
+            padding: 20px;
+            display: flex;
+            justify-content: center;
+        }
+
+        .container {
+            width: 100%;
+            max-width: 800px;
+            background: #ffffff;
+            padding: 25px;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+
+        h2 {
+            margin-bottom: 20px;
+            color: #2c3e50;
+            border-bottom: 2px solid #eee;
+            padding-bottom: 10px;
+        }
+
+        /* Khu vực nhập liệu */
+        .control-group {
+            margin-bottom: 20px;
+        }
+
+        label {
+            display: block;
+            font-weight: 600;
+            margin-bottom: 8px;
+            color: #4a5568;
+        }
+
+        textarea {
+            width: 100%;
+            height: 120px;
+            padding: 12px;
+            border: 1px solid #cbd5e0;
+            border-radius: 6px;
+            resize: vertical;
+            font-size: 14px;
+            margin-bottom: 15px;
+        }
+
+        textarea:focus {
+            outline: none;
+            border-color: #3182ce;
+            box-shadow: 0 0 0 3px rgba(66, 153, 225, 0.5);
+        }
+
+        /* Thanh chức năng (Up / Start) */
+        .action-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin-bottom: 25px;
+        }
+
+        .upload-zone {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        input[type="file"] {
+            display: none;
+        }
+
+        .btn-custom {
+            padding: 10px 20px;
+            font-size: 14px;
+            font-weight: 600;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+
+        .btn-up {
+            background-color: #4a5568;
+            color: white;
+        }
+
+        .btn-up:hover {
+            background-color: #2d3748;
+        }
+
+        .btn-start {
+            background-color: #38a169;
+            color: white;
+            padding: 10px 30px;
+            font-size: 16px;
+        }
+
+        .btn-start:hover {
+            background-color: #2f855a;
+        }
+
+        #file-name {
+            font-size: 13px;
+            color: #718096;
+            max-width: 200px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        /* Bảng danh sách UID */
+        .table-container {
+            overflow-x: auto;
+        }
+
+        .table-title-area {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 8px;
+        }
+
+        .total-count {
+            font-size: 13px;
+            color: #4a5568;
+            background: #edf2f7;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-weight: bold;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 14px;
+        }
+
+        th, td {
+            padding: 12px 15px;
+            text-align: left;
+            border-bottom: 1px solid #e2e8f0;
+        }
+
+        th {
+            background-color: #edf2f7;
+            color: #4a5568;
+            font-weight: 600;
+        }
+
+        tr:hover {
+            background-color: #f7fafc;
+        }
+
+        .status-badge {
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: bold;
+            background-color: #e2e8f0;
+            color: #4a5568;
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h2>Hệ thống Gửi Tin Nhắn theo UID</h2>
+
+    <div class="control-group">
+        <label for="message-input">Nội dung tin nhắn:</label>
+        <textarea id="message-input" placeholder="Nhập nội dung tin nhắn tại đây... Chúc bạn một ngày tốt lành!"></textarea>
+    </div>
+
+    <div class="action-row">
+        <div class="upload-zone">
+            <label for="file-upload" class="btn-custom btn-up">Up File UID (.txt)</label>
+            <input type="file" id="file-upload" accept=".txt">
+            <span id="file-name">Chưa chọn file nào</span>
+        </div>
+
+        <button class="btn-custom btn-start" id="btn-start">Start</button>
+    </div>
+
+    <div class="table-container">
+        <div class="table-title-area">
+            <label style="margin-bottom: 0;">Danh sách UID mục tiêu:</label>
+            <span class="total-count" id="total-count">Tổng số: 0</span>
+        </div>
+        <table>
+            <thead>
+                <tr>
+                    <th style="width: 15%;">STT</th>
+                    <th style="width: 55%;">UID</th>
+                    <th style="width: 30%;">Trạng thái</th>
+                </tr>
+            </thead>
+            <tbody id="uid-table-body">
+                <tr>
+                    <td colspan="3" style="text-align: center; color: #a0aec0; padding: 30px;">
+                        Vui lòng bấm nút "Up File UID" để tải danh sách lên.
+                    </td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<script>
+    const fileUpload = document.getElementById('file-upload');
+    const fileName = document.getElementById('file-name');
+    const tableBody = document.getElementById('uid-table-body');
+    const totalCount = document.getElementById('total-count');
+    const btnStart = document.getElementById('btn-start');
+    const messageInput = document.getElementById('message-input');
+
+    // Xử lý đọc file .txt khi người dùng chọn file (Nút Up)
+    fileUpload.addEventListener('change', function(e) {
+    const file = e.target.files[0];
+    if (!file) {
+        fileName.textContent = 'Chưa chọn file nào';
+        return;
+    }
+
+    fileName.textContent = file.name;
+
+        const reader = new FileReader();
+        reader.onload = function(progressEvent) {
+            const text = progressEvent.target.result;
+            
+            // Tách các dòng trong file, lọc bỏ khoảng trắng và dòng trống
+            const uids = text.split('\n')
+                            .map(line => line.trim())
+                            .filter(line => line.length > 0);
+
+            // Cập nhật số lượng đếm
+            totalCount.textContent = `Tổng số: ${uids.length}`;
+
+            // Xóa dữ liệu cũ trong bảng và chèn dữ liệu mới
+            console.log("Reset")
+            tableBody.innerHTML = '';
+            
+            if (uids.length === 0) {
+                tableBody.innerHTML = `<tr><td colspan="3" style="text-align: center; color: #a0aec0; padding: 30px;">File không có dữ liệu UID hợp lệ.</td></tr>`;
+                return;
+            }
+
+            uids.forEach((uid, index) => {
+                const row = document.createElement('tr');
+                row.innerHTML = `
+                    <td>${index + 1}</td>
+                    <td>${uid}</td>
+                    <td><span class="status-badge">Sẵn sàng</span></td>
+                `;
+                tableBody.appendChild(row);
+            });
+
+            // --- ĐOẠN THÊM VÀO ---
+            // Reset giá trị input về rỗng để nếu chọn lại cùng file này vẫn kích hoạt sự kiện 'change'
+            fileUpload.value = ''; 
+            // ---------------------
+        };
+
+        reader.readAsText(file);
+    });
+
+    // Bắt sự kiện nút Start (Ví dụ cơ bản)
+    btnStart.addEventListener('click', function() {
+        const message = messageInput.value.trim();
+        if (!message) {
+            alert('Vui lòng nhập nội dung tin nhắn trước khi bắt đầu!');
+            return;
+        }
+        
+        // Bạn có thể viết thêm logic kết nối API xử lý gửi ở đây
+        alert('Đã kích hoạt tiến trình gửi tin nhắn!');
+    });
+</script>
+
+</body>
+</html>
