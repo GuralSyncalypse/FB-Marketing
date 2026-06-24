@@ -8,6 +8,7 @@ import bot
 
 # Biến toàn cục để lưu trữ tạm thời Cookies nhận từ Extension
 TEMPORARY_COOKIES = None
+USER_AGENT = ""
 
 # ================= CLASS XỬ LÝ REQUEST TỪ EXTENSION =================
 class ExtensionHandler(BaseHTTPRequestHandler):
@@ -25,6 +26,7 @@ class ExtensionHandler(BaseHTTPRequestHandler):
             # 1. Parse dữ liệu JSON từ Extension
             data = json.loads(post_data)
             uid = data.get("uid", "Không tìm thấy UID")
+            user_agent = data.get("user_agent", "")
             
             # 2. Xử lý gom mảng cookies thành chuỗi string
             cookie_list = data.get("cookie_json", [])
@@ -37,6 +39,7 @@ class ExtensionHandler(BaseHTTPRequestHandler):
             
             cookie_string = "; ".join(cookie_pairs)
             TEMPORARY_COOKIES = data.get("cookie_json", [])
+            USER_AGENT = user_agent
             
             # 3. Log debug ra console
             print("\n" + "="*50)
@@ -82,22 +85,24 @@ class App(tk.Tk):
         top_shared_frame = ttk.LabelFrame(self, text=" Thông tin tài khoản hiện tại (Dùng chung) ", padding=10)
         top_shared_frame.pack(side="top", fill="x", padx=10, pady=5)
         
+        self.empty_uid = "Chờ tín hiệu từ Extension..."
+
         ttk.Label(top_shared_frame, text="UID Hiện tại (Nhận tự động từ Extension):").pack(side="left", padx=(0, 10))
         self.ent_uid_shared = ttk.Entry(top_shared_frame, font=("Arial", 11, "bold"), foreground="blue")
         self.ent_uid_shared.pack(side="left", fill="x", expand=True)
-        self.ent_uid_shared.insert(0, "Chờ tín hiệu từ Extension...")
+        self.ent_uid_shared.insert(0, self.empty_uid)
         
         # --- KHU VỰC DI CHUYỂN: Giao diện chính chứa các Tab Navigation ---
         self.notebook = ttk.Notebook(self)
         self.notebook.pack(fill="both", expand=True, padx=5, pady=5)
         
-        self.tab1 = ttk.Frame(self.notebook)
+        #self.tab1 = ttk.Frame(self.notebook)
         self.tab2 = ttk.Frame(self.notebook)
-        self.notebook.add(self.tab1, text="Màn hình 1")
-        self.notebook.add(self.tab2, text="Màn hình 2")
+        #self.notebook.add(self.tab1, text="Màn hình 1")
+        self.notebook.add(self.tab2, text="Bắn SMS")
         
         # Cài đặt giao diện chi tiết các màn hình
-        self.setup_screen_1()
+        #self.setup_screen_1()
         self.setup_screen_2()
         
         # KHỞI CHẠY SERVER NGẦM (Mặc định chạy ở port 8000 theo cấu hình của bạn)
@@ -218,7 +223,7 @@ class App(tk.Tk):
             print(f"[Selenium Màn 1 Lỗi] {str(e)}")
             self.after(0, lambda: messagebox.showerror("Lỗi Tiến Trình", f"Có lỗi xảy ra: {str(e)}"))
 
-    # ================= MÀN HÌNH 2 =================
+    # ================= MÀN HÌNH 2 (SMS) =================
     def setup_screen_2(self):
         left_frame = ttk.LabelFrame(self.tab2, text=" Cấu hình ", padding=10)
         left_frame.pack(side="left", fill="both", expand=True, padx=10, pady=10)
@@ -226,25 +231,11 @@ class App(tk.Tk):
         ttk.Label(left_frame, text="Nội dung (Hỗ trợ Icon/Ký tự đặc biệt):").pack(anchor="w", pady=2)
         self.txt_content_s2 = tk.Text(left_frame, height=8, wrap="word")
         self.txt_content_s2.pack(fill="x", pady=5)
-        self.txt_content_s2.insert("1.0", "Nội dung màn hình 2... 📋⭐")
-
-        ttk.Label(left_frame, text="Tập tin đính kèm (Có thể chọn nhiều hình ảnh/video):").pack(anchor="w", pady=5)
-        file_frame = ttk.Frame(left_frame)
-        file_frame.pack(fill="x", pady=2)
-        
-        self.txt_files_s2 = tk.Text(file_frame, height=3, wrap="none")
-        self.txt_files_s2.pack(side="left", fill="x", expand=True, padx=(0, 5))
-        
-        scrollbar_x = ttk.Scrollbar(left_frame, orient="horizontal", command=self.txt_files_s2.xview)
-        self.txt_files_s2.configure(xscrollcommand=scrollbar_x.set)
-        
-        btn_browse_s2 = ttk.Button(file_frame, text="Chọn files", command=self.browse_multiple_files_s2)
-        btn_browse_s2.pack(side="right", anchor="n")
-        scrollbar_x.pack(fill="x", pady=(0, 5))
+        self.txt_content_s2.insert("1.0", "")
 
         # Nút Start Màn hình 2
-        btn_start_s2 = ttk.Button(left_frame, text="START (Màn hình 2)", command=self.start_screen_2)
-        btn_start_s2.pack(fill="x", pady=20, ipady=5)
+        self.btn_start_s2 = ttk.Button(left_frame, text="Chạy", command=self.start_screen_2)
+        self.btn_start_s2.pack(fill="x", pady=20, ipady=5)
 
         # Cột bên phải: Danh sách UIDs
         right_frame = ttk.LabelFrame(self.tab2, text=" Danh sách UIDs ", padding=10)
@@ -272,12 +263,17 @@ class App(tk.Tk):
         btn_clear_all = ttk.Button(btn_frame, text="Clear All", command=self.clear_all_uids)
         btn_clear_all.pack(side="right", fill="x", expand=True, padx=(2, 0), ipady=2)
 
-    def browse_multiple_files_s2(self):
-        file_paths = filedialog.askopenfilenames(filetypes=[("Media Files", "*.png *.jpg *.jpeg *.mp4 *.avi *.mkv"), ("All Files", "*.*")])
-        if file_paths:
-            self.selected_files_s2 = list(file_paths)
-            self.txt_files_s2.delete("1.0", tk.END)
-            self.txt_files_s2.insert("1.0", ", ".join(self.selected_files_s2))
+   
+    def get_uids(self):
+        # Lấy tất cả các dòng từ vị trí đầu tiên (0) đến cuối cùng (tk.END)
+        raw_uids = self.listbox_uids.get(0, tk.END)
+
+        # Chuyển thành list và loại bỏ các UID trùng lặp
+        uid_list = list(dict.fromkeys(raw_uids))
+
+
+
+        return uid_list
 
     def clear_all_uids(self):
         # Kiểm tra xem danh sách có dữ liệu không trước khi xóa
@@ -325,31 +321,54 @@ class App(tk.Tk):
         # Lấy dữ liệu từ giao diện tại luồng chính trước khi truyền vào Thread
         content = self.txt_content_s2.get("1.0", tk.END).strip()
         uid = self.ent_uid_shared.get()
-        files = list(self.selected_files_s1)
+        uids = self.get_uids()
+
+        if uid == self.empty_uid:
+            messagebox.showerror("Lỗi", f"Không có tài khoản để chạy!")
+            return
+
+        if not uids:
+            messagebox.showerror("Lỗi", f"Không danh sách uids!")
+            return
+
+        if not content:
+            messagebox.showerror("Lỗi", f"Không có nội dung!")
+            return
         
-        # Khởi tạo một tiến trình (Thread) riêng cho Selenium của Màn 2
+        self.btn_start_s2.config(state=tk.DISABLED, text="Đang chạy...")
         # daemon=True để khi tắt app tkinter thì tiến trình Selenium này cũng tự tắt theo
         selenium_thread = threading.Thread(
             target=self.run_selenium_process_s2, 
-            args=(uid, content, files), 
+            args=(uid, content, uids), 
             daemon=True
         )
         selenium_thread.start()
 
-    def run_selenium_process_s2(self, uid, content, files):
+    def run_selenium_process_s2(self, user, content, uids):
         global TEMPORARY_COOKIES
-        print(f"\n[Selenium Màn 1] Đang khởi chạy tiến trình ngầm cho UID: {uid}...")
-        
-        
+        print(f"\n[Selenium Màn 2] Đang khởi chạy tiến trình ngầm cho UID: {user}...")
+
         try:
-            
+            obj = bot.FacebookBot()
+            obj.user_agent = USER_AGENT
+            obj.login_with_cookies(user, TEMPORARY_COOKIES)
+
+            success_count = 0
+            for uid in uids:
+                success = obj.send_message_via_uid(uid, content)
+                if success:
+                    success_count += 1
+
+            messagebox.showinfo("Thông báo", f'Thành công [{success_count}/{len(uids)}]')
             
             # Hiển thị thông báo khi xong (Cần gọi messagebox thông qua luồng an toàn)
-            self.after(0, lambda: messagebox.showinfo("Thành công", f"UID {uid} đã hoàn thành tiến trình!"))
+            self.after(0, lambda: messagebox.showinfo("Thành công", f"UID {user} đã hoàn thành tiến trình!"))
             
         except Exception as e:
-            print(f"[Selenium Màn 1 Lỗi] {str(e)}")
             self.after(0, lambda: messagebox.showerror("Lỗi Tiến Trình", f"Có lỗi xảy ra: {str(e)}"))
+        finally:
+            obj.close()
+            self.after(0, lambda: self.btn_start_s2.config(state=tk.NORMAL, text="Chạy Tiến Trình"))
 
 
 

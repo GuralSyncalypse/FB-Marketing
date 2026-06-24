@@ -3,7 +3,9 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from concurrent.futures import ThreadPoolExecutor
 from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.common.action_chains import ActionChains
 from selenium.common.exceptions import TimeoutException, NoSuchElementException, ElementClickInterceptedException
 from openpyxl import Workbook
 from queue import Queue, Empty
@@ -16,31 +18,25 @@ import re
 
 class FacebookBot:
     def __init__(self):
-        self.one_time_code_exist = False
         self.driver = None
-        self.cookie_file = "fb_cookies.pkl"
-
-        self.setup_driver()
+        self.user_agent = None
 
     def setup_driver(self):
-        options = webdriver.ChromeOptions()
-        # if optimized:
-        #     options.add_argument("--headless")
-        #     options.add_argument("--disable-gpu")
-        #     options.add_argument("--no-sandbox")
+        """Hàm phụ trách cấu hình và khởi tạo Chrome Driver"""
+        chrome_options = Options()
+        # chrome_options.add_argument("--headless=new")  # Chạy ẩn trên background server
+        chrome_options.add_argument("--no-sandbox")
+        chrome_options.add_argument("--disable-dev-shm-usage")
+        chrome_options.add_argument("--window-size=1920,1080")
 
-        prefs = {
-            "profile.managed_default_content_settings.images": 2
-        }
-
-        #options.add_experimental_option("prefs", prefs)     
-        #options.page_load_strategy = "eager"
-        options.add_argument("--disable-notifications")
-
-        driver = webdriver.Chrome(options=options)
-        driver.maximize_window()
-
-        self.driver = driver
+        # Chỉ add user-agent nếu nó hợp lệ
+        if self.user_agent:
+            chrome_options.add_argument(f"--user-agent={self.user_agent}")
+        else:
+            # Hoặc định nghĩa một UA mặc định sạch sẽ
+            chrome_options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+        
+        self.driver = webdriver.Chrome(options=chrome_options)
 
     def save_cookies(self):
         try:
@@ -127,7 +123,11 @@ class FacebookBot:
         Trả về True nếu thành công, False nếu thất bại.
         """
         print(f"[UID: {uid}] Đang khởi tạo trình duyệt...")
-        self.setup_driver()
+        try:
+
+            self.setup_driver()
+        except Exception as e:
+            print(e)
         
         try:
             # 1. Đi tới Facebook trước khi add cookie
@@ -241,84 +241,163 @@ class FacebookBot:
         if current_chunk:
             insert_to_editor(editor, current_chunk)
 
+    def type_content_to_editor(self, editor, content):
+        def insert_to_editor(editor, text):
+            """Bắn chữ/emoji an toàn qua JS"""
+            self.driver.execute_script("""
+                var element = arguments[0];
+                var text = arguments[1];
+                element.focus();
+                document.execCommand('insertText', false, text);
+                element.dispatchEvent(new Event('input', { bubbles: true }));
+            """, editor, text)
+        editor.click()
+        
+        # Tách chuỗi: Giữ riêng emoji và giữ riêng cả dấu xuống dòng \n
+        tokens = re.split(r'([\U00010000-\U0010FFFF]|\n)', content)
+        
+        current_chunk = ""
+        target_length = random.randint(15, 35) # Độ dài ký tự ngẫu nhiên cho mỗi cụm
+        
+        for token in tokens:
+            if not token:
+                continue
+                
+            # TRƯỜNG HỢP 1: Gặp dấu xuống dòng
+            if token == '\n':
+                if current_chunk:
+                    insert_to_editor(editor, current_chunk)
+                    current_chunk = ""
+                
+                # Ép ô chatbox xuống dòng bằng Shift + Enter
+                editor.send_keys(Keys.SHIFT + Keys.ENTER)
+                time.sleep(0.05)
+                target_length = random.randint(15, 35) # Reset độ dài ngẫu nhiên
+                continue
+                
+            # TRƯỜNG HỢP 2: Gặp Emoji
+            if re.match(r'[\U00010000-\U0010FFFF]', token):
+                # Nếu cụm chữ hiện tại + emoji này dài quá target, đẩy cụm cũ đi trước
+                if len(current_chunk) + 1 >= target_length:
+                    insert_to_editor(editor, current_chunk)
+                    current_chunk = token # Emoji sẽ mở đầu cho cụm mới
+                    target_length = random.randint(15, 35)
+                    time.sleep(random.uniform(0.1, 0.2))
+                else:
+                    current_chunk += token
+                continue
+                
+            # TRƯỜNG HỢP 3: Chữ thường
+            current_chunk += token
+            
+            # Nếu tích lũy đủ độ dài ngẫu nhiên thì đẩy vào ô chat
+            if len(current_chunk) >= target_length:
+                insert_to_editor(editor, current_chunk)
+                current_chunk = ""
+                target_length = random.randint(15, 35)
+                time.sleep(random.uniform(0.1, 0.2))
+                
+        # Đẩy nốt phần nội dung còn lại (nếu có)
+        if current_chunk:
+            insert_to_editor(editor, current_chunk)
+
     def send_message_via_uid(self, uid, content):
+        def human_delay(min_sec=0.5, max_sec=1.5):
+            """Tạo khoảng trễ ngẫu nhiên mô phỏng sự suy nghĩ của người dùng"""
+            time.sleep(random.uniform(min_sec, max_sec))
+
+        def human_scroll_to(element):
+            """Cuộn trang mượt mà và tự nhiên giống người thật"""
+            try:
+                # Cuộn từ từ đến vị trí element
+                desired_y = element.location['y'] - random.randint(150, 250)
+                current_y = self.driver.execute_script("return window.pageYOffset;")
+                step = 40 if desired_y > current_y else -40
+                
+                # Cuộn từng bước nhỏ
+                for pos in range(current_y, desired_y, step):
+                    self.driver.execute_script(f"window.scrollTo(0, {pos});")
+                    time.sleep(random.uniform(0.01, 0.03))
+                
+                # Cuộn chính xác bước cuối
+                self.driver.execute_script(f"window.scrollTo(0, {desired_y});")
+                human_delay(0.3, 0.7)
+            except Exception:
+                # Fallback nếu cuộn mượt bị lỗi
+                self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", element)
+
+        def human_click(element):
+            """Click vào một điểm ngẫu nhiên trên nút thay vì click vào tâm"""
+            try:
+                size = element.size
+                # Lấy tọa độ ngẫu nhiên bên trong kích thước của nút (tránh sát rìa)
+                offset_x = random.randint(int(size['width'] * 0.2), int(size['width'] * 0.8))
+                offset_y = random.randint(int(size['height'] * 0.2), int(size['height'] * 0.8))
+                
+                # Di chuyển chuột tới phần tử và click với khoảng lệch ngẫu nhiên
+                action = ActionChains(self.driver)
+                action.move_to_element_with_offset(element, offset_x - (size['width']/2), offset_y - (size['height']/2))
+                action.click()
+                action.perform()
+            except Exception:
+                # Fallback nếu ActionChains bị chặn
+                element.click()
+
         def close_chat():
             try:
+                human_delay(1.5, 3.5) # Người thật nhìn màn hình một lúc rồi mới tắt
                 print("[+] Đang đóng chat...")
-                input("")
 
                 close_button = self.driver.find_element(
                     By.XPATH,
-                    '//div[@aria-label="Close chat"]'
+                    '//div[contains(@aria-label, "Close") or contains(@aria-label, "Đóng")]'
                 )
 
-                close_button.click()
-
+                human_click(close_button)
                 print("[+] Đã đóng chat")
 
             except Exception as e:
-                print(
-                    f"[!] Close chat failed UID={uid}: {e}"
-                )
+                print(f"[!] Close chat failed UID={uid}: {e}")
 
         def find_message_button():
             try:
-                message_button = WebDriverWait(self.driver, 2).until(
+                message_button = WebDriverWait(self.driver, 4).until(
                     EC.element_to_be_clickable((
                         By.XPATH,
                         '//div[@aria-label="Message" or @aria-label="Nhắn tin"]'
                     ))
                 )
-
                 print("[+] Đã tìm thấy nút Message")
-
+                return message_button
             except TimeoutException as e:
-                raise Exception(
-                    f"[MESSAGE_BUTTON_TIMEOUT] UID={uid}"
-                ) from e
-            
+                raise Exception(f"[MESSAGE_BUTTON_TIMEOUT] UID={uid}") from e
             except NoSuchElementException as e:
-                raise Exception(
-                    f"[MESSAGE_BUTTON_NOT_FOUND] UID={uid}"
-                ) from e
-            
-            return message_button
+                raise Exception(f"[MESSAGE_BUTTON_NOT_FOUND] UID={uid}") from e
             
         def find_chatbox():
             try:
-                chatbox_xpath = (
-                    '//div[contains(@aria-label, "Write to")]'
+                chatbox_xpath = '//div[contains(@aria-label, "Write to") or contains(@aria-label, "Viết cho")]'
+                chatbox = WebDriverWait(self.driver, 4).until(
+                    EC.presence_of_element_located((By.XPATH, chatbox_xpath))
                 )
-
-                chatbox = WebDriverWait(self.driver, 3).until(
-                    EC.presence_of_element_located(
-                        (By.XPATH, chatbox_xpath)
-                    )
-                )
-
                 print("[+] Đã tìm thấy chatbox")
-
-            except TimeoutException as e:
+                return chatbox
+            except Exception as e:
+                print(f"[!] Không tìm thấy chatbox cho UID={uid}. Tiến hành đóng chat...")
                 close_chat()
-                raise Exception(
-                    f"[CHATBOX_TIMEOUT] UID={uid}"
-                ) from e
+                raise Exception(f"[CHATBOX_TIMEOUT] UID={uid}") from e
             
-            return chatbox
-
         def clear_chatbox():
             try:
                 print("[+] Đang clear chatbox...")
-
+                human_click(chatbox) # Click vào trước khi xóa giống người thật
+                human_delay(0.2, 0.5)
                 chatbox.send_keys(Keys.CONTROL, "a")
+                human_delay(0.1, 0.3)
                 chatbox.send_keys(Keys.DELETE)
-
                 print("[+] Đã clear chatbox")
-
             except Exception as e:
-                print(
-                    f"[!] Clear chatbox failed UID={uid}: {e}"
-                )
+                print(f"[!] Clear chatbox failed UID={uid}: {e}")
 
         try:
             # =========================
@@ -326,43 +405,29 @@ class FacebookBot:
             # =========================
             try:
                 print(f"\n[+] Đang mở trang cá nhân UID: {uid}")
-
                 user_url = f"https://www.facebook.com/{uid}"
                 self.driver.get(user_url)
+                human_delay(2.0, 4.0) # Chờ trang tải và người dùng "nhìn" giao diện
 
             except Exception as e:
-                raise Exception(
-                    f"[OPEN_PROFILE_FAILED] UID={uid}"
-                ) from e
+                raise Exception(f"[OPEN_PROFILE_FAILED] UID={uid}") from e
 
             # =========================
-            # FIND MESSAGE BUTTON
+            # FIND & SCROLL TO MESSAGE BUTTON
             # =========================
             message_button = find_message_button()
+            human_scroll_to(message_button)
 
-            
             # =========================
             # CLICK MESSAGE BUTTON
             # =========================
             try:
-                self.driver.execute_script(
-                    "arguments[0].scrollIntoView({block: 'center'});",
-                    message_button
-                )
-
-                message_button.click()
-
+                human_click(message_button)
                 print("[+] Đã click Message")
-
-            except ElementClickInterceptedException as e:
-                raise Exception(
-                    f"[MESSAGE_BUTTON_CLICK_BLOCKED] UID={uid}"
-                ) from e
+                human_delay(1.0, 2.5) # Chờ khung chat bật lên
 
             except Exception as e:
-                raise Exception(
-                    f"[MESSAGE_BUTTON_CLICK_FAILED] UID={uid}"
-                ) from e
+                raise Exception(f"[MESSAGE_BUTTON_CLICK_FAILED] UID={uid}") from e
 
             # =========================
             # FIND CHATBOX
@@ -370,22 +435,19 @@ class FacebookBot:
             chatbox = find_chatbox()
 
             # =========================
-            # INPUT MESSAGE
+            # INPUT MESSAGE (Đã có logic của bạn)
             # =========================
             try:
                 print(f"[+] Đang nhập tin nhắn: '{content}'")
-
-                time.sleep(random.uniform(0.2, 0.5))
+                human_click(chatbox) # Click kích hoạt khung chat trước khi gõ
+                human_delay(0.3, 0.7)
+                
                 self.type_content_to_editor(chatbox, content)
-
                 print("[+] Đã nhập tin nhắn")
-                input("")
+                human_delay(0.5, 1.2) # Do dự một chút trước khi bấm gửi
 
             except Exception as e:
-                raise Exception(
-                    f"[INPUT_MESSAGE_FAILED] UID={uid}"
-                ) from e
-
+                raise Exception(f"[INPUT_MESSAGE_FAILED] UID={uid}") from e
 
             # =========================
             # SEND MESSAGE
@@ -393,23 +455,17 @@ class FacebookBot:
             try:
                 print("[+] Đang gửi tin nhắn...")
 
-                input("")
-                # send_button.click()
-                #chatbox.click(Keys.ENTER)
-                time.sleep(random.uniform(0.5, 1.5))
-
+                # Giả lập nhấn ENTER để gửi tin nhắn một cách tự nhiên
+                chatbox.send_keys(Keys.ENTER)
+                
+                human_delay(1.5, 3.0) # Đợi tin nhắn chuyển trạng thái "Đã gửi"
                 print("[🔑] Gửi thành công!")
 
             except Exception as e:
-                raise Exception(
-                    f"[SEND_MESSAGE_FAILED] UID={uid}"
-                ) from e
-
+                raise Exception(f"[SEND_MESSAGE_FAILED] UID={uid}") from e
 
             clear_chatbox()
-
             close_chat()
-
             return True
 
         except Exception as e:
