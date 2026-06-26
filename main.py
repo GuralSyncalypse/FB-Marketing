@@ -96,13 +96,13 @@ class App(tk.Tk):
         self.notebook = ttk.Notebook(self)
         self.notebook.pack(fill="both", expand=True, padx=5, pady=5)
         
-        #self.tab1 = ttk.Frame(self.notebook)
+        self.tab1 = ttk.Frame(self.notebook)
         self.tab2 = ttk.Frame(self.notebook)
-        #self.notebook.add(self.tab1, text="Màn hình 1")
+        self.notebook.add(self.tab1, text="Dev")
         self.notebook.add(self.tab2, text="Bắn SMS")
         
         # Cài đặt giao diện chi tiết các màn hình
-        #self.setup_screen_1()
+        self.dev_screen()
         self.setup_screen_2()
         
         # KHỞI CHẠY SERVER NGẦM (Mặc định chạy ở port 8000 theo cấu hình của bạn)
@@ -125,7 +125,7 @@ class App(tk.Tk):
         self.ent_uid_shared.insert(0, uid)
 
     # ================= MÀN HÌNH 1 =================
-    def setup_screen_1(self):
+    def dev_screen(self):
         left_frame = ttk.LabelFrame(self.tab1, text=" Cấu hình & Điều khiển ", padding=10)
         left_frame.pack(side="left", fill="both", expand=True, padx=10, pady=10)
         
@@ -149,7 +149,7 @@ class App(tk.Tk):
         scrollbar_x.pack(fill="x", pady=(0, 5))
 
         # Nút Start Màn hình 1
-        btn_start_s1 = ttk.Button(left_frame, text="START (Màn hình 1)", command=self.start_screen_1)
+        btn_start_s1 = ttk.Button(left_frame, text="START (Màn hình 1)", command=self.dev_start)
         btn_start_s1.pack(fill="x", pady=20, ipady=5)
 
         # Cột bên phải: Danh sách lựa chọn kèm checkbox
@@ -181,7 +181,7 @@ class App(tk.Tk):
             self.tree_s1.item(item, text=new_status)
 
    # ================= THỜI ĐIỂM NHẤN START MÀN HÌNH 1 =================
-    def start_screen_1(self):
+    def dev_start(self):
         # Lấy dữ liệu từ giao diện tại luồng chính trước khi truyền vào Thread
         content = self.txt_content_s1.get("1.0", tk.END).strip()
         uid = self.ent_uid_shared.get()
@@ -191,15 +191,15 @@ class App(tk.Tk):
         # daemon=True để khi tắt app tkinter thì tiến trình Selenium này cũng tự tắt theo
         selenium_thread = threading.Thread(
             target=self.run_selenium_process_s1, 
-            args=(uid, content, files), 
+            args=(uid,), 
             daemon=True
         )
         selenium_thread.start()
 
-    def run_selenium_process_s1(self, uid, content, files):
+    def run_selenium_process_s1(self, uid):
         global TEMPORARY_COOKIES
-        print(f"\n[Selenium Màn 1] Đang khởi chạy tiến trình ngầm cho UID: {uid}...")
-        
+        print(f"\n[Dev Mode] Đang khởi chạy tiến trình ngầm cho UID: {uid}...")
+        post = 'https://www.facebook.com/share/p/17soorDCmE/?mibextid=wwXIfr'
         
         try:
             obj = bot.FacebookBot()
@@ -211,10 +211,9 @@ class App(tk.Tk):
             #                 "group_id": group_id,
             #                 "group_url": f"https://www.facebook.com/groups/{group_id}/"
             #             }
-            groups = obj.scrape_joined_groups()
-            for i, group in enumerate(groups):
-                self.tree_s1.insert("", "end", iid=f"item_{i}", text="☐", values=(group['group_name'],))
 
+            obj.share_post_to_group(post, '1309302016338203')
+            print("Hoàn thành!")
             
             # Hiển thị thông báo khi xong (Cần gọi messagebox thông qua luồng an toàn)
             self.after(0, lambda: messagebox.showinfo("Thành công", f"UID {uid} đã hoàn thành tiến trình!"))
@@ -222,6 +221,10 @@ class App(tk.Tk):
         except Exception as e:
             print(f"[Selenium Màn 1 Lỗi] {str(e)}")
             self.after(0, lambda: messagebox.showerror("Lỗi Tiến Trình", f"Có lỗi xảy ra: {str(e)}"))
+        finally:
+            print("Tiến hành đóng tiến trình...")
+            obj.close()
+            print("Đóng trình duyệt hoàn tất!")
 
     # ================= MÀN HÌNH 2 (SMS) =================
     def setup_screen_2(self):

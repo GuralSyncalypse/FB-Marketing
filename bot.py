@@ -241,66 +241,6 @@ class FacebookBot:
         if current_chunk:
             insert_to_editor(editor, current_chunk)
 
-    def type_content_to_editor(self, editor, content):
-        def insert_to_editor(editor, text):
-            """Bắn chữ/emoji an toàn qua JS"""
-            self.driver.execute_script("""
-                var element = arguments[0];
-                var text = arguments[1];
-                element.focus();
-                document.execCommand('insertText', false, text);
-                element.dispatchEvent(new Event('input', { bubbles: true }));
-            """, editor, text)
-        editor.click()
-        
-        # Tách chuỗi: Giữ riêng emoji và giữ riêng cả dấu xuống dòng \n
-        tokens = re.split(r'([\U00010000-\U0010FFFF]|\n)', content)
-        
-        current_chunk = ""
-        target_length = random.randint(15, 35) # Độ dài ký tự ngẫu nhiên cho mỗi cụm
-        
-        for token in tokens:
-            if not token:
-                continue
-                
-            # TRƯỜNG HỢP 1: Gặp dấu xuống dòng
-            if token == '\n':
-                if current_chunk:
-                    insert_to_editor(editor, current_chunk)
-                    current_chunk = ""
-                
-                # Ép ô chatbox xuống dòng bằng Shift + Enter
-                editor.send_keys(Keys.SHIFT + Keys.ENTER)
-                time.sleep(0.05)
-                target_length = random.randint(15, 35) # Reset độ dài ngẫu nhiên
-                continue
-                
-            # TRƯỜNG HỢP 2: Gặp Emoji
-            if re.match(r'[\U00010000-\U0010FFFF]', token):
-                # Nếu cụm chữ hiện tại + emoji này dài quá target, đẩy cụm cũ đi trước
-                if len(current_chunk) + 1 >= target_length:
-                    insert_to_editor(editor, current_chunk)
-                    current_chunk = token # Emoji sẽ mở đầu cho cụm mới
-                    target_length = random.randint(15, 35)
-                    time.sleep(random.uniform(0.1, 0.2))
-                else:
-                    current_chunk += token
-                continue
-                
-            # TRƯỜNG HỢP 3: Chữ thường
-            current_chunk += token
-            
-            # Nếu tích lũy đủ độ dài ngẫu nhiên thì đẩy vào ô chat
-            if len(current_chunk) >= target_length:
-                insert_to_editor(editor, current_chunk)
-                current_chunk = ""
-                target_length = random.randint(15, 35)
-                time.sleep(random.uniform(0.1, 0.2))
-                
-        # Đẩy nốt phần nội dung còn lại (nếu có)
-        if current_chunk:
-            insert_to_editor(editor, current_chunk)
-
     def send_message_via_uid(self, uid, content):
         def human_delay(min_sec=0.5, max_sec=1.5):
             """Tạo khoảng trễ ngẫu nhiên mô phỏng sự suy nghĩ của người dùng"""
@@ -552,6 +492,65 @@ class FacebookBot:
         print(f"🎉 Đã lọc và trích xuất thành công {len(joined_groups)} nhóm đã tham gia.")
         return joined_groups
     
+    def share_post_to_group(self, post_url, uid=""):
+        time.sleep(2)
+        self.driver.get(post_url)
+
+        try:
+            time.sleep(2)
+            # Tìm phần tử có thuộc tính aria-label cụ thể
+            xpath_locator = '//div[@aria-label="Gửi nội dung này cho bạn bè hoặc đăng lên trang cá nhân của bạn."]'
+
+            # Sử dụng trong Selenium
+            share_button = WebDriverWait(self.driver, 10).until(
+                EC.element_to_be_clickable((By.XPATH, xpath_locator))
+            )
+            self.driver.execute_script("arguments[0].click();", share_button)
+            print("Đã click nút Share")
+
+            # Sử dụng XPath để đợi một thẻ <a> có chứa UID trong href xuất hiện
+            group_btn_xpath = '//div[@aria-label="Chia sẻ lên nhóm"]'
+            group_btn = WebDriverWait(self.driver, 4).until(
+                EC.element_to_be_clickable((By.XPATH, group_btn_xpath))
+            )
+            self.driver.execute_script("arguments[0].click();", group_btn)
+            print("Đã click: Chia sẻ lên nhóm")
+
+            time.sleep(1)
+            # Tìm thẻ a chứa uid, nhưng chỉ tìm bên trong cái dialog đang mở
+            group_xpath = f"//div[@role='dialog']//a[contains(@href, '{uid}')]/ancestor::div[@role='listitem']"
+
+            try:
+                # Đợi tối đa 15 giây cho đến khi phần tử xuất hiện
+                group = WebDriverWait(self.driver, 15).until(
+                    EC.element_to_be_clickable((By.XPATH, group_xpath))
+                ) 
+
+                # Click vào link
+                ActionChains(self.driver).move_to_element(group).click().perform()
+                print(f"Đã tìm thấy và click vào nhóm: {uid}")
+
+            except Exception as e:
+                print(f"Không tìm thấy nhóm sau 15s chờ đợi: {e}")
+            print("Đã vào trang share group!")
+
+            time.sleep(10)
+
+            editor_xpath = ".//div[@data-lexical-editor='true' and contains(@aria-placeholder, 'Tạo bài viết')]"
+            editor = WebDriverWait(self.driver, 10).until(
+                EC.element_to_be_clickable((By.XPATH, editor_xpath))
+            )
+            editor.click()
+            editor.send_keys("ABC!!!")
+
+            time.sleep(5)
+            return True
+        except Exception as e:
+            print(e)
+            return False
+
+
+
     def create_post(self, img_paths=[]):
         self.driver.get("https://www.facebook.com/me")
         post_box_xpath = "//span[contains(text(),'mind') or contains(text(),'nghĩ gì') or contains(text(),'something') or contains(text(),'viết gì')]"
