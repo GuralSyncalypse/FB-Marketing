@@ -492,14 +492,16 @@ class FacebookBot:
         print(f"🎉 Đã lọc và trích xuất thành công {len(joined_groups)} nhóm đã tham gia.")
         return joined_groups
     
-    def share_post_to_group(self, post_url, uid=""):
+    def share_post_to_group(self, post_url, content : str, uid=""):
         time.sleep(2)
         self.driver.get(post_url)
 
         try:
+            xpath_dialog = "//div[@role='dialog']"
             time.sleep(2)
+
             # Tìm phần tử có thuộc tính aria-label cụ thể
-            xpath_locator = '//div[@aria-label="Gửi nội dung này cho bạn bè hoặc đăng lên trang cá nhân của bạn."]'
+            xpath_locator = xpath_dialog + "//div[@aria-label='Gửi nội dung này cho bạn bè hoặc đăng lên trang cá nhân của bạn.']"
 
             # Sử dụng trong Selenium
             share_button = WebDriverWait(self.driver, 10).until(
@@ -509,7 +511,7 @@ class FacebookBot:
             print("Đã click nút Share")
 
             # Sử dụng XPath để đợi một thẻ <a> có chứa UID trong href xuất hiện
-            group_btn_xpath = '//div[@aria-label="Chia sẻ lên nhóm"]'
+            group_btn_xpath = xpath_dialog + '//div[@aria-label="Chia sẻ lên nhóm"]'
             group_btn = WebDriverWait(self.driver, 4).until(
                 EC.element_to_be_clickable((By.XPATH, group_btn_xpath))
             )
@@ -517,14 +519,16 @@ class FacebookBot:
             print("Đã click: Chia sẻ lên nhóm")
 
             time.sleep(1)
-            # Tìm thẻ a chứa uid, nhưng chỉ tìm bên trong cái dialog đang mở
-            group_xpath = f"//div[@role='dialog']//a[contains(@href, '{uid}')]/ancestor::div[@role='listitem']"
 
+            # Tìm thẻ a chứa uid, nhưng chỉ tìm bên trong cái dialog đang mở
+            group_xpath = xpath_dialog + f"//a[contains(@href, '{uid}')]/ancestor::div[@role='listitem']"
+            
             try:
                 # Đợi tối đa 15 giây cho đến khi phần tử xuất hiện
                 group = WebDriverWait(self.driver, 15).until(
                     EC.element_to_be_clickable((By.XPATH, group_xpath))
-                ) 
+                )
+                print(group.get_attribute("outerHTML"))
 
                 # Click vào link
                 ActionChains(self.driver).move_to_element(group).click().perform()
@@ -536,14 +540,22 @@ class FacebookBot:
 
             time.sleep(10)
 
-            editor_xpath = ".//div[@data-lexical-editor='true' and contains(@aria-placeholder, 'Tạo bài viết')]"
+            editor_xpath = xpath_dialog + "//div[@data-lexical-editor='true' and contains(@aria-placeholder, 'Tạo bài viết')]"
             editor = WebDriverWait(self.driver, 10).until(
                 EC.element_to_be_clickable((By.XPATH, editor_xpath))
             )
-            editor.click()
-            editor.send_keys("ABC!!!")
 
-            time.sleep(5)
+            # Focus và nhập
+            self.type_content_to_editor(editor, content)
+
+
+            post_btn_xpath = xpath_dialog + "//*[@role='button' and (@aria-label='Đăng' or @aria-label='Post')]"
+            post_btn = WebDriverWait(self.driver, 10).until(
+                EC.element_to_be_clickable((By.XPATH, post_btn_xpath))
+            )
+            
+            post_btn.click()
+
             return True
         except Exception as e:
             print(e)
@@ -595,3 +607,4 @@ class FacebookBot:
         for img_path in img_paths:
             print(f"Thêm ảnh {img_path}")
             file_input.send_keys(img_path)
+
