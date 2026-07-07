@@ -16,6 +16,8 @@ import pickle
 import os
 import re
 
+BASE_DIR = os.path.dirname(os.path.abspath(__file__)) # Thư mục /app
+
 class FacebookBot:
     def __init__(self):
         self.driver = None
@@ -563,35 +565,91 @@ class FacebookBot:
 
 
 
-    def create_post(self, img_paths=[]):
-        self.driver.get("https://www.facebook.com/me")
+    def create_post(self, id, content="", img_paths=[]):
+        self.driver.get(f"https://www.facebook.com/groups/{id}")
         post_box_xpath = "//span[contains(text(),'mind') or contains(text(),'nghĩ gì') or contains(text(),'something') or contains(text(),'viết gì')]"
 
+        try:
+            post_box = WebDriverWait(self.driver, 5).until( # Tăng lên 5s cho an toàn mạng
+                EC.element_to_be_clickable((By.XPATH, post_box_xpath))
+            )
+            post_box.click()
+        except:
+            return False
+        print("Đã mở hộp đăng bài")
 
-        input()
-        post_box = self.driver.find_element(By.XPATH, post_box_xpath)
-        post_box.click()
+        # Giả lập: Nghỉ ngẫu nhiên, không lần nào giống lần nào để qua mặt AI Facebook
+        time.sleep(random.uniform(1.2, 2.5))
 
-        time.sleep(2)
-
-
-        input()
         composer = WebDriverWait(self.driver, 10).until(
             EC.presence_of_element_located(
                 (By.XPATH, "//div[@role='dialog' and @aria-modal='true']")
             )
         )
 
-        print(composer.get_attribute("outerHTML")[:200])
+        print("Đã vào hộp đăng bài")
+
         # Cô lập Form
-        input()
-        editor = composer.find_element(
-            By.XPATH,
-            ".//div[@role='textbox']"
+        editor = WebDriverWait(composer, 4, poll_frequency=0.1).until(
+            EC.visibility_of_element_located((By.XPATH, ".//div[@role='textbox']"))
         )
 
         editor.click()
-        editor.send_keys("ABC!!!")
+        time.sleep(random.uniform(0.5, 1.0))
+
+        print("🚀 Đang tiến hành gõ cụm thông minh kết hợp xử lý Emoji...")
+
+        # Biểu thức chính quy (Regex) để tách văn bản thành mảng gồm các cụm chữ và các icon riêng biệt
+        # Nó sẽ tách chuỗi kiểu: "Hello 🌍 mọi người 😍" thành ['Hello ', '🌍', ' mọi người ', '😍']
+        tokens = re.split(r'([\U00010000-\U0010FFFF])', content)
+
+        for token in tokens:
+            if not token:
+                continue
+            
+            # TRƯỜNG HỢP 1: Nếu token là một Emoji (Ký tự nằm ngoài vùng BMP)
+            if re.match(r'[\U00010000-\U0010FFFF]', token):
+                # Dùng Javascript để chèn icon vào cuối nội dung hiện tại của thẻ div editor
+                self.driver.execute_script("""
+                    var element = arguments[0];
+                    var emoji = arguments[1];
+                    
+                    // Chèn emoji vào thẻ div editable
+                    element.focus();
+                    document.execCommand('insertText', false, emoji);
+                    
+                    // Kích hoạt sự kiện để Facebook cập nhật trạng thái
+                    element.dispatchEvent(new Event('input', { bubbles: true }));
+                """, editor, token)
+                time.sleep(random.uniform(0.1, 0.3)) # Nghỉ một chút sau khi chèn icon
+                
+            # TRƯỜNG HỢP 2: Nếu là chữ viết thông thường
+            else:
+                # Tách chữ thường thành các cụm nhỏ hơn nữa (tầm 15 ký tự) để gõ nhanh
+                chunk_size = 15
+                chunks = [token[i:i+chunk_size] for i in range(0, len(token), chunk_size)]
+                
+                for chunk in chunks:
+                    editor.send_keys(chunk)
+                    time.sleep(random.uniform(0.05, 0.15)) # Tốc độ gõ cụm chữ nhanh
+
+        time.sleep(random.uniform(1.0, 2.0))
+        print("✅ Đã gõ xong toàn bộ văn bản và Emoji không một lỗi vết!")
+
+        # BOT
+        # self.driver.execute_script("""
+        #     var element = arguments[0];
+        #     var text = arguments[1];
+            
+        #     // 1. Gán text (bao gồm cả Emoji) vào thẻ div
+        #     element.innerText = text;
+            
+        #     // 2. Kích hoạt liên tiếp các sự kiện để React/Vue/Angular cập nhật State
+        #     element.dispatchEvent(new Event('focus', { bubbles: true }));
+        #     element.dispatchEvent(new Event('input', { bubbles: true }));
+        #     element.dispatchEvent(new Event('change', { bubbles: true }));
+        #     element.dispatchEvent(new Event('blur', { bubbles: true }));
+        # """, editor, content)
 
         # Thêm ảnh
         if not img_paths:
@@ -603,8 +661,40 @@ class FacebookBot:
             By.XPATH,
             f".//input[@accept='{valid_file}']"
         )
-
+        
         for img_path in img_paths:
-            print(f"Thêm ảnh {img_path}")
-            file_input.send_keys(img_path)
+            file_name = img_path.split('\\')[-1]
+            file_path = os.path.join(BASE_DIR, "bot_media_tmp", file_name)
+            file_input.send_keys(file_path)
+            # Nghỉ một chút giữa mỗi lần nạp file ảnh tiếp theo
+            time.sleep(random.uniform(1.0, 2.0))
+
+        print("Đã nạp toàn bộ ảnh, chờ Facebook xử lý render...")
+
+        # Giả lập: Đợi cho đến khi nút Post thực sự "Bấm được" (Hết trạng thái disabled của FB)
+        post_btn = WebDriverWait(composer, 15).until(
+            EC.element_to_be_clickable((By.XPATH, ".//div[@aria-label='Post']"))
+        )
+
+        # Di chuột mồi đến nút trước khi click (Sử dụng ActionChains nếu cần thiết)
+        time.sleep(random.uniform(0.7, 1.5)) 
+
+        # post_btn.click()
+        print("Đã đăng bài!")
+
+        # Nút đăng bài
+        post_btn = composer.find_element(
+            By.XPATH,
+            ".//div[@aria-label='Post']"
+        )
+
+        #post_btn.click()
+
+        actions = ActionChains(self.driver)
+        actions.move_to_element(post_btn).perform() # Rê chuột đến ô đăng bài
+        time.sleep(random.uniform(0.3, 0.7))        # Giữ chuột ở đó một tí
+        #actions.click(post_btn).perform()                   # Bấm chuột
+        
+        print("Hoàn tất đăng bài")
+        return True
 

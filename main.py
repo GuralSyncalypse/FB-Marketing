@@ -7,6 +7,7 @@ import urllib.parse
 import bot
 
 from views.dev_screen import DevelopScreen
+from views.post_screen import PostScreen
 from views.sms_screen import SmsScreen
 from services.local_server import start_local_server
 
@@ -291,6 +292,7 @@ class App(tk.Tk):
 
         tab_configs = [
             ("Share bài", DevelopScreen),
+            ("Đăng bài", PostScreen),
             ("Bắn SMS", SmsScreen),
         ]
 
