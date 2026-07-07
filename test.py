@@ -6,6 +6,10 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, NoSuchElementException, ElementClickInterceptedException
 from openpyxl import Workbook
+try:
+    from bs4 import BeautifulSoup
+except ImportError:
+    BeautifulSoup = None
 from queue import Queue, Empty
 import threading
 import random
@@ -63,7 +67,6 @@ class FacebookBot:
 
     def is_logged_in(self):
         driver = self.driver
-        print(driver.get_cookies())
         cookies = {c["name"] for c in driver.get_cookies()}
 
         print(cookies)
@@ -850,6 +853,156 @@ class FacebookBot:
             file_input.send_keys(img_path)
 
 
+    def scan_posts(self, search_string, num_posts=15, on_data=None, output_queue=None, stop_event=None) -> list:
+        search_box = WebDriverWait(self.driver, 15).until(
+            EC.presence_of_element_located(
+                (By.XPATH, "//input[@type='search' and @role='combobox']")
+            )
+        )
+
+        search_box.click()
+
+        time.sleep(1)
+        search_box.send_keys(search_string)
+
+        time.sleep(1)
+        search_box.send_keys(Keys.ENTER)
+
+        checkbox = WebDriverWait(self.driver, 10).until(
+            EC.element_to_be_clickable((
+                By.XPATH,
+                "//input[@role='switch' and (@aria-label='Bài viết mới đây' or @aria-label='Recent posts')]"
+            ))
+        )
+        checkbox.click()
+        time.sleep(5)
+
+        
+        # elements = self.driver.find_elements(
+        #     By.XPATH,
+        #     "//*[@role='feed']//*[@data-virtualized]"
+        # )
+
+        # for el in elements[:2]:
+        #     print(el.get_attribute("data-virtualized"))
+
+        # Watcher
+        seen = set()
+        latest_count = 0
+
+        def emit(payload):
+            """
+            Đẩy dữ liệu ra ngoài theo 2 kiểu:
+            - callback `on_data(payload)`
+            - queue `output_queue.put(payload)`
+            """
+            if on_data:
+                on_data(payload)
+
+            if output_queue:
+                output_queue.put(payload)
+
+        def parse_visible_post_html(html):
+            if BeautifulSoup is None:
+                return {
+                    "root_name": None,
+                    "text": "",
+                    "links": [],
+                    "images": [],
+                    "attrs": {},
+                    "prettify": "",
+                    "error": "beautifulsoup4 is not installed",
+                }
+
+            soup = BeautifulSoup(html or "", "html.parser")
+
+            links = []
+            for a in soup.find_all("a", href=True):
+                links.append({
+                    "text": a.get_text(" ", strip=True),
+                    "href": a.get("href"),
+                })
+
+            images = []
+            for img in soup.find_all("img"):
+                images.append({
+                    "alt": img.get("alt"),
+                    "src": img.get("src"),
+                })
+
+            return {
+                "root_name": soup.name,
+                "text": soup.get_text(" ", strip=True),
+                "links": links,
+                "images": images,
+                "attrs": dict(soup.attrs) if getattr(soup, "attrs", None) else {},
+                "prettify": soup.prettify(),
+            }
+
+        while True:
+            if stop_event and stop_event.is_set():
+                emit({
+                    "type": "stopped",
+                    "reason": "stop_event",
+                    "latest_count": latest_count,
+                })
+                break
+
+            posts = self.driver.find_elements(
+                By.XPATH,
+                "//*[@role='feed']//*[@data-virtualized]"
+            )
+
+            count = len(posts)
+            latest_count = count
+
+            visible_posts = []
+            for index, post in enumerate(posts[:num_posts], start=1):
+                try:
+                    html = post.get_attribute("outerHTML") or ""
+                    parsed_html = parse_visible_post_html(html)
+                    text = parsed_html["text"]
+                except Exception as e:
+                    text = ""
+                    html = ""
+                    parsed_html = {
+                        "root_name": None,
+                        "text": "",
+                    "links": [],
+                    "images": [],
+                    "attrs": {},
+                    "prettify": "",
+                    "error": str(e),
+                }
+
+                visible_posts.append({
+                    "index": index,
+                    "text": text,
+                    "html": html,
+                    "parsed_html": parsed_html,
+                })
+
+            emit({
+                "type": "scan_update",
+                "search_string": search_string,
+                "count": count,
+                "visible_posts": visible_posts,
+            })
+
+            # Nếu số lượng bài bé hơn num_posts thì tiếp tục cuộn
+            if count < num_posts:
+                self.driver.execute_script(
+                    "window.scrollTo(0, document.body.scrollHeight);"
+                )
+
+                time.sleep(3)
+            else:
+                time.sleep(30)
+                self.driver.refresh()
+                time.sleep(5)
+        
+
+
 
 def create_excel_file(data, headers, filename="results.xlsx"):
     wb = Workbook()
@@ -877,7 +1030,6 @@ uids = [
     '100009400587023'
 ]
 
-
 email = 'gurasyn@gmail.com'
 password = 'saile123456!'
 
@@ -898,8 +1050,12 @@ def main():
         ▶️ Thông tin chi tiết: {link}
     '''
 
-    for uid in uids:
-        bot.send_message_via_uid(uid, content)
+    def on_scan_data(payload):
+        if payload.get("type") == "scan_update":
+            print(f"[OUTSIDE] count={payload['count']}")
+            print(f"{payload['visible_posts'][0]['parsed_html']}")
+
+    bot.scan_posts("Bán BOBO", on_data=on_scan_data)
 
     input("")
 
