@@ -853,7 +853,7 @@ class FacebookBot:
             file_input.send_keys(img_path)
 
 
-    def scan_posts(self, search_string, num_posts=15, on_data=None, output_queue=None, stop_event=None) -> list:
+    def scan_posts(self, search_string, num_posts=15, keywords=None, on_data=None, output_queue=None, stop_event=None) -> list:
         search_box = WebDriverWait(self.driver, 15).until(
             EC.presence_of_element_located(
                 (By.XPATH, "//input[@type='search' and @role='combobox']")
@@ -930,6 +930,25 @@ class FacebookBot:
                     "src": img.get("src"),
                 })
 
+            
+            element = soup.find(attrs={"data-ad-rendering-role": "story_message"})
+
+            if element:
+                # 1. Lấy toàn bộ text và xóa khoảng trắng thừa
+                text = element.get_text(separator="\n", strip=True)
+                
+                # 2. Chuyển về chữ thường để lọc không phân biệt hoa thường
+                text_lower = text.lower()
+                
+                # 3. Kiểm tra xem có chứa ĐỒNG THỜI cả 2 từ khóa hay không
+                if "cần" in text_lower and "bobo" in text_lower:
+                    print("🟢 PHÁT HIỆN BÀI ĐĂNG PHÙ HỢP:")
+                    print(text)
+                    print("-" * 30)
+                else:
+                    # Bài viết không chứa đủ từ khóa, bỏ qua không in
+                    pass
+
             return {
                 "root_name": soup.name,
                 "text": soup.get_text(" ", strip=True),
@@ -938,6 +957,33 @@ class FacebookBot:
                 "attrs": dict(soup.attrs) if getattr(soup, "attrs", None) else {},
                 "prettify": soup.prettify(),
             }
+
+        def normalize_keywords(value):
+            if value is None:
+                return []
+
+            if isinstance(value, str):
+                items = [value]
+            else:
+                items = list(value)
+
+            normalized = []
+            for item in items:
+                if item is None:
+                    continue
+                text = str(item).strip().lower()
+                if text:
+                    normalized.append(text)
+            return normalized
+
+        def post_matches_keywords(post_text, post_html, keyword_list):
+            if not keyword_list:
+                return True
+
+            haystack = f"{post_text}\n{post_html}".lower()
+            return all(keyword in haystack for keyword in keyword_list)
+
+        normalized_keywords = normalize_keywords(keywords)
 
         while True:
             if stop_event and stop_event.is_set():
@@ -958,6 +1004,7 @@ class FacebookBot:
 
             visible_posts = []
             for index, post in enumerate(posts[:num_posts], start=1):
+                # Xử lý thông tin bài đăng
                 try:
                     html = post.get_attribute("outerHTML") or ""
                     parsed_html = parse_visible_post_html(html)
@@ -972,14 +1019,19 @@ class FacebookBot:
                     "images": [],
                     "attrs": {},
                     "prettify": "",
-                    "error": str(e),
-                }
+                        "error": str(e),
+                    }
 
+                if not post_matches_keywords(text, html, normalized_keywords):
+                    continue
+
+                # Lưu vào list
                 visible_posts.append({
                     "index": index,
                     "text": text,
                     "html": html,
                     "parsed_html": parsed_html,
+                    "matched_keywords": normalized_keywords,
                 })
 
             emit({
@@ -987,6 +1039,8 @@ class FacebookBot:
                 "search_string": search_string,
                 "count": count,
                 "visible_posts": visible_posts,
+                "matched_count": len(visible_posts),
+                "keywords": normalized_keywords,
             })
 
             # Nếu số lượng bài bé hơn num_posts thì tiếp tục cuộn
@@ -1053,9 +1107,9 @@ def main():
     def on_scan_data(payload):
         if payload.get("type") == "scan_update":
             print(f"[OUTSIDE] count={payload['count']}")
-            print(f"{payload['visible_posts'][0]['parsed_html']}")
+            print(f"{len(payload['visible_posts'])}")
 
-    bot.scan_posts("Bán BOBO", on_data=on_scan_data)
+    bot.scan_posts("Bán BOBO", keywords=["cần", "bobo"], on_data=on_scan_data)
 
     input("")
 
