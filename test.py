@@ -4,7 +4,7 @@ from selenium.webdriver.common.keys import Keys
 from concurrent.futures import ThreadPoolExecutor
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, NoSuchElementException, ElementClickInterceptedException
+from selenium.common.exceptions import TimeoutException, NoSuchElementException, ElementClickInterceptedException, StaleElementReferenceException
 from openpyxl import Workbook
 try:
     from bs4 import BeautifulSoup
@@ -17,8 +17,9 @@ import time
 import pickle
 import os
 import re
+import json
 
-group_id = '3636784079935693'
+group_id = 'KillingFloorClanESP'
 urls = [
     f'https://www.facebook.com/groups/{group_id}'
 ]
@@ -31,7 +32,7 @@ class FacebookBot:
         self.driver = None
         self.cookie_file = "fb_cookies.pkl"
 
-        self.init_driver(False)
+        self.init_driver(True)
 
     def init_driver(self, optimized):
         options = webdriver.ChromeOptions()
@@ -40,12 +41,13 @@ class FacebookBot:
             options.add_argument("--disable-gpu")
             options.add_argument("--no-sandbox")
 
-        prefs = {
-            "profile.managed_default_content_settings.images": 2
-        }
+            prefs = {
+                "profile.managed_default_content_settings.images": 2
+            }
+            options.add_experimental_option("prefs", prefs)     
+            options.page_load_strategy = "eager"
 
-        #options.add_experimental_option("prefs", prefs)     
-        #options.page_load_strategy = "eager"
+        
         options.add_argument("--disable-notifications")
 
         driver = webdriver.Chrome(options=options)
@@ -228,34 +230,59 @@ class FacebookBot:
         username = link.replace("https://www.facebook.com/", "").strip("/")
         return username if username else None
 
-    def collect_members(self, max_scroll=50):
+    def collect_members(self, max_scroll=9999):
         driver = self.driver
-        collected = set()
+        collected = {}  # Dùng dict với key là user_id để tự động lọc trùng dữ liệu
         seen_links = set()
 
-        last_index = 0
-        xpath = "//div[@role='listitem']//a[@role='link']"
+        # Script JS gom trọn bộ dữ liệu của từng member item trong DOM
+        js_extract_members = """
+            return Array.from(document.querySelectorAll('div[role="listitem"]')).map(item => {
+                const linkElem = item.querySelector('a[role="link"][aria-label]');
+                if (!linkElem) return null;
+
+                const name = linkElem.getAttribute('aria-label') || '';
+                const href = linkElem.getAttribute('href') || '';
+
+                // Lấy link ảnh đại diện
+                const imgElem = item.querySelector('image, img');
+                let avatar = '';
+                if (imgElem) {
+                    avatar = imgElem.getAttribute('xlink:href') || imgElem.getAttribute('src') || '';
+                }
+
+                // Lấy toàn bộ văn bản (Role, Bạn chung, Thời gian gia nhập...)
+                const textLines = item.innerText ? item.innerText.split('\\n').map(t => t.trim()).filter(Boolean) : [];
+
+                return {
+                    name: name,
+                    link: href,
+                    avatar: avatar,
+                    details: textLines
+                };
+            }).filter(item => item !== null);
+        """
+
+        last_height = driver.execute_script("return document.body.scrollHeight")
+        no_change_count = 0
 
         for i in range(max_scroll):
             print(f"🔄 Scroll {i+1}")
 
-            elements = driver.find_elements(By.XPATH, xpath)
+            # Lấy danh sách chứa đầy đủ thông tin từ JavaScript
+            raw_members = driver.execute_script(js_extract_members)
 
-            if not elements:
-                print("⚠️ No elements found")
+            if not raw_members and i == 0:
+                print("⚠️ No elements found at all")
                 break
 
-            old_last = elements[-1].get_attribute("href")
-
-            new_elements = elements[last_index:]
-            last_index = len(elements)
-
-            for e in new_elements:
-                link = e.get_attribute("href")
+            for item in raw_members:
+                link = item.get("link")
 
                 if not link or link in seen_links:
                     continue
 
+                # Bỏ qua các đường link bài viết/stories/reels
                 if any(x in link for x in ["photo", "story", "reel", "watch"]):
                     continue
 
@@ -263,14 +290,31 @@ class FacebookBot:
 
                 user_id = self.extract_user_id(link)
                 if user_id:
-                    collected.add(user_id)
+                    # Gán thêm user_id vào object thông tin
+                    item["user_id"] = user_id
+                    
+                    # Lưu vào dict (nếu trùng user_id sẽ tự ghi đè/bỏ qua)
+                    collected[user_id] = item
 
+            # Cuộn xuống cuối trang
             driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-            time.sleep(1)
-            
+            time.sleep(1.5)
 
-        print(len(collected))
-        return collected
+            # Kiểm tra điều kiện dừng cuộn
+            new_height = driver.execute_script("return document.body.scrollHeight")
+            if new_height == last_height:
+                no_change_count += 1
+                if no_change_count >= 3:
+                    print("✅ Đã đến cuối danh sách, dừng thuật toán.")
+                    break
+            else:
+                no_change_count = 0
+                last_height = new_height
+
+        # Chuyển Dict thành List dữ liệu hoàn chỉnh
+        result_list = list(collected.values())
+        print(f"🎯 Hoàn thành! Thu thập được: {len(result_list)} thành viên.")
+        return result_list
 
     def perform_search(self):
         driver = self.driver
@@ -290,11 +334,11 @@ class FacebookBot:
 
         users = self.collect_members()
 
-        file_path = "users.txt"
+        file_path = "users.json"
 
+        # Lưu dữ liệu dưới dạng JSON chuẩn UTF-8
         with open(file_path, "w", encoding="utf-8") as f:
-            for u in users:
-                f.write(f"{u}\n")
+            json.dump(users, f, ensure_ascii=False, indent=4)
 
         print(f"✅ Saved {len(users)} users to {file_path}")
 
@@ -1104,14 +1148,8 @@ def main():
         ▶️ Thông tin chi tiết: {link}
     '''
 
-    def on_scan_data(payload):
-        if payload.get("type") == "scan_update":
-            print(f"[OUTSIDE] count={payload['count']}")
-            print(f"{len(payload['visible_posts'])}")
+    bot.perform_search()
 
-    bot.scan_posts("Bán BOBO", keywords=["cần", "bobo"], on_data=on_scan_data)
-
-    input("")
 
     bot.close()
 

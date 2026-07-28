@@ -9,6 +9,7 @@ import bot
 from views.dev_screen import DevelopScreen
 from views.post_screen import PostScreen
 from views.sms_screen import SmsScreen
+from views.uid_scan_screen import UidScanScreen
 from services.local_server import start_local_server
 
 # ================= CLASS GIAO DIỆN CHÍNH (APP) =================
@@ -294,6 +295,7 @@ class App(tk.Tk):
             ("Share bài", DevelopScreen),
             ("Đăng bài", PostScreen),
             ("Bắn SMS", SmsScreen),
+            ("Quét UID", UidScanScreen),
         ]
 
         self.tabs = []

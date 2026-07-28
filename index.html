@@ -3,295 +3,1343 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Hệ thống Gửi Tin Nhắn theo UID</title>
+    <title>Hệ thống Thẩm định & Cấu trúc Giải pháp Tài chính Chuyên biệt Doanh nghiệp</title>
+    
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Chart.js CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    
+    <!-- SheetJS CDN (để xuất báo cáo Excel) -->
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+    
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+
     <style>
-        /* Reset CSS cơ bản */
-        * {
-            box-sizing: border-box;
-            margin: 0;
-            padding: 0;
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-        }
-
         body {
-            background-color: #f4f6f9;
-            color: #333;
-            padding: 20px;
-            display: flex;
-            justify-content: center;
+            font-family: 'Inter', sans-serif;
+            background-color: #0f172a;
         }
-
-        .container {
-            width: 100%;
-            max-width: 800px;
-            background: #ffffff;
-            padding: 25px;
-            border-radius: 8px;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        .custom-scrollbar::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
         }
-
-        h2 {
-            margin-bottom: 20px;
-            color: #2c3e50;
-            border-bottom: 2px solid #eee;
-            padding-bottom: 10px;
+        .custom-scrollbar::-webkit-scrollbar-track {
+            background: #1e293b;
         }
-
-        /* Khu vực nhập liệu */
-        .control-group {
-            margin-bottom: 20px;
+        .custom-scrollbar::-webkit-scrollbar-thumb {
+            background: #475569;
+            border-radius: 3px;
         }
-
-        label {
-            display: block;
-            font-weight: 600;
-            margin-bottom: 8px;
-            color: #4a5568;
-        }
-
-        textarea {
-            width: 100%;
-            height: 120px;
-            padding: 12px;
-            border: 1px solid #cbd5e0;
-            border-radius: 6px;
-            resize: vertical;
-            font-size: 14px;
-            margin-bottom: 15px;
-        }
-
-        textarea:focus {
-            outline: none;
-            border-color: #3182ce;
-            box-shadow: 0 0 0 3px rgba(66, 153, 225, 0.5);
-        }
-
-        /* Thanh chức năng (Up / Start) */
-        .action-row {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            flex-wrap: wrap;
-            gap: 10px;
-            margin-bottom: 25px;
-        }
-
-        .upload-zone {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }
-
-        input[type="file"] {
-            display: none;
-        }
-
-        .btn-custom {
-            padding: 10px 20px;
-            font-size: 14px;
-            font-weight: 600;
-            border: none;
-            border-radius: 6px;
-            cursor: pointer;
-            transition: background-color 0.2s;
-        }
-
-        .btn-up {
-            background-color: #4a5568;
-            color: white;
-        }
-
-        .btn-up:hover {
-            background-color: #2d3748;
-        }
-
-        .btn-start {
-            background-color: #38a169;
-            color: white;
-            padding: 10px 30px;
-            font-size: 16px;
-        }
-
-        .btn-start:hover {
-            background-color: #2f855a;
-        }
-
-        #file-name {
-            font-size: 13px;
-            color: #718096;
-            max-width: 200px;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-        }
-
-        /* Bảng danh sách UID */
-        .table-container {
-            overflow-x: auto;
-        }
-
-        .table-title-area {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 8px;
-        }
-
-        .total-count {
-            font-size: 13px;
-            color: #4a5568;
-            background: #edf2f7;
-            padding: 2px 8px;
-            border-radius: 12px;
-            font-weight: bold;
-        }
-
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            font-size: 14px;
-        }
-
-        th, td {
-            padding: 12px 15px;
-            text-align: left;
-            border-bottom: 1px solid #e2e8f0;
-        }
-
-        th {
-            background-color: #edf2f7;
-            color: #4a5568;
-            font-weight: 600;
-        }
-
-        tr:hover {
-            background-color: #f7fafc;
-        }
-
-        .status-badge {
-            padding: 4px 8px;
-            border-radius: 4px;
-            font-size: 12px;
-            font-weight: bold;
-            background-color: #e2e8f0;
-            color: #4a5568;
+        .animate-progress {
+            transition: width 0.6s cubic-bezier(0.4, 0, 0.2, 1);
         }
     </style>
 </head>
-<body>
+<body class="text-slate-100 min-h-screen flex flex-col antialiased bg-slate-950">
 
-<div class="container">
-    <h2>Hệ thống Gửi Tin Nhắn theo UID</h2>
+    <!-- Navigation Bar -->
+    <header class="bg-slate-900 text-white shadow-2xl py-4 px-6 sticky top-0 z-50 border-b border-slate-800">
+        <div class="max-w-7xl mx-auto flex flex-col lg:flex-row items-center justify-between gap-4">
+            <div>
+                <div class="flex items-center space-x-2">
+                    <span class="bg-indigo-500/10 text-indigo-400 text-xs font-bold px-3 py-1 rounded-full uppercase tracking-wider border border-indigo-500/20">
+                        Hệ thống Thẩm định Tín dụng Cấu trúc & Thương mại Chuỗi
+                    </span>
+                </div>
+                <h1 class="text-xl md:text-2xl font-extrabold tracking-tight mt-1 flex items-center text-slate-100">
+                    <svg class="w-7 h-7 text-indigo-500 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"></path>
+                    </svg>
+                    HỆ THỐNG PHÂN TÍCH & PHÊ DUYỆT TÀI TRỢ PHI TRUYỀN THỐNG
+                </h1>
+                <p class="text-slate-400 text-xs mt-1">Đánh giá khả năng tham gia các giải pháp: Bao thanh toán nợ phải thu, Thư tín dụng UPAS L/C, Tài trợ chuỗi cung ứng (Distributor/Supplier Financing), Bảo lãnh thi công & Thuê tài chính thiết bị</p>
+            </div>
+            <div class="flex flex-wrap gap-2 w-full lg:w-auto justify-end">
+                <button onclick="applyPreset('manufacturing')" class="bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold py-2 px-3 rounded-lg border border-slate-700 transition">
+                    Mẫu DN Sản xuất / Xuất khẩu
+                </button>
+                <button onclick="applyPreset('contractor')" class="bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold py-2 px-3 rounded-lg border border-slate-700 transition">
+                    Mẫu Nhà thầu Xây lắp
+                </button>
+                <button onclick="applyPreset('trading')" class="bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold py-2 px-3 rounded-lg border border-slate-700 transition">
+                    Mẫu DN Phân phối Thương mại
+                </button>
+                <button onclick="exportComprehensiveExcel()" class="bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold py-2 px-4 rounded-lg shadow-lg transition flex items-center justify-center space-x-1">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
+                    <span>Xuất Tờ trình Thẩm định (Excel)</span>
+                </button>
+                <button
+                    onclick="openRegisterModal()"
+                    class="bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold py-2 px-4 rounded-lg shadow-lg transition flex items-center justify-center space-x-1">
 
-    <div class="control-group">
-        <label for="message-input">Nội dung tin nhắn:</label>
-        <textarea id="message-input" placeholder="Nhập nội dung tin nhắn tại đây... Chúc bạn một ngày tốt lành!"></textarea>
-    </div>
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                            d="M12 4v16m8-8H4" />
+                    </svg>
 
-    <div class="action-row">
-        <div class="upload-zone">
-            <label for="file-upload" class="btn-custom btn-up">Up File UID (.txt)</label>
-            <input type="file" id="file-upload" accept=".txt">
-            <span id="file-name">Chưa chọn file nào</span>
+                    <span>Đăng ký tư vấn</span>
+                </button>
+            </div>
         </div>
+    </header>
 
-        <button class="btn-custom btn-start" id="btn-start">Start</button>
-    </div>
+    <!-- Main Content Area -->
+    <main class="flex-grow max-w-7xl w-full mx-auto p-4 md:p-6 grid grid-cols-1 lg:grid-cols-12 gap-6">
+        
+        <!-- Left Column (Inputs): 5 Cols -->
+        <section class="lg:col-span-5 flex flex-col space-y-6">
+            
+            <!-- General Profile and Governance -->
+            <div class="bg-slate-900 rounded-xl shadow-lg p-5 border border-slate-800">
+                <h2 class="text-xs font-bold text-indigo-400 uppercase tracking-wider mb-4 border-b border-slate-800 pb-2 flex items-center justify-between">
+                    <span class="flex items-center">
+                        <span class="w-2.5 h-2.5 bg-indigo-500 rounded-full mr-2"></span>
+                        Hồ sơ Pháp nhân & Quản trị rủi ro
+                    </span>
+                    <span class="text-xxs text-slate-500 font-normal">Định tính</span>
+                </h2>
+                
+                <div class="space-y-3.5">
+                    <div class="grid grid-cols-2 gap-3">
+                        <div>
+                            <label class="block text-xxs font-medium text-slate-400 mb-1">Mô hình Hoạt động</label>
+                            <select id="corp_sector" onchange="runEvaluation()" class="w-full bg-slate-950 border border-slate-800 text-slate-200 rounded-lg py-1.5 px-3 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                                <option value="manufacturing" selected>Sản xuất & Xuất khẩu</option>
+                                <option value="contractor">Nhà thầu xây lắp / Cơ điện</option>
+                                <option value="trading">Phân phối thương mại / Chuỗi sỉ</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="block text-xxs font-medium text-slate-400 mb-1">Năm Hoạt động thực tế</label>
+                            <select id="op_years" onchange="runEvaluation()" class="w-full bg-slate-950 border border-slate-800 text-slate-200 rounded-lg py-1.5 px-3 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                                <option value="1">Dưới 1 năm</option>
+                                <option value="2">Từ 1 đến 3 năm</option>
+                                <option value="4" selected>Trên 3 năm</option>
+                            </select>
+                        </div>
+                    </div>
+                    
+                    <div class="grid grid-cols-2 gap-3">
+                        <div>
+                            <label class="block text-xxs font-medium text-slate-400 mb-1">Xếp hạng CIC (Tín nhiệm tín dụng)</label>
+                            <select id="cic_status" onchange="runEvaluation()" class="w-full bg-slate-950 border border-slate-800 text-slate-200 rounded-lg py-1.5 px-3 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                                <option value="cic1" selected>Nhóm 1: Không có trễ hạn dư nợ</option>
+                                <option value="cic2">Nhóm 2: Cần chú ý (Trễ nợ &lt; 90 ngày)</option>
+                                <option value="cic3">Nhóm 3-5: Nợ xấu (Trễ nợ &gt; 90 ngày)</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="block text-xxs font-medium text-slate-400 mb-1">Kiểm toán Báo cáo Tài chính</label>
+                            <select id="financial_audit" onchange="runEvaluation()" class="w-full bg-slate-950 border border-slate-800 text-slate-200 rounded-lg py-1.5 px-3 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                                <option value="audited_big4" selected>Bởi Big 4 / Hãng lớn quốc tế</option>
+                                <option value="audited_local">Bởi công ty kiểm toán độc lập nội địa</option>
+                                <option value="unaudited_tax">Chưa kiểm toán (Chỉ có báo cáo thuế)</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+            </div>
 
-    <div class="table-container">
-        <div class="table-title-area">
-            <label style="margin-bottom: 0;">Danh sách UID mục tiêu:</label>
-            <span class="total-count" id="total-count">Tổng số: 0</span>
+            <!-- Core Financial Status -->
+            <div class="bg-slate-900 rounded-xl shadow-lg p-5 border border-slate-800">
+                <h2 class="text-xs font-bold text-indigo-400 uppercase tracking-wider mb-4 border-b border-slate-800 pb-2 flex items-center justify-between">
+                    <span class="flex items-center">
+                        <span class="w-2.5 h-2.5 bg-indigo-500 rounded-full mr-2"></span>
+                        Chỉ số Tài chính Năm gần nhất
+                    </span>
+                    <span class="text-xxs text-slate-500 font-normal">Định lượng</span>
+                </h2>
+
+                <div class="space-y-3.5">
+                    <div class="grid grid-cols-2 gap-3">
+                        <div>
+                            <label class="block text-xxs font-medium text-slate-400 mb-1">Tổng Doanh thu (VND)</label>
+                            <input type="text" id="fin_revenue" value="120,000,000,000" oninput="formatAndCalc(this)" class="w-full text-right font-bold bg-slate-950 border border-slate-800 text-emerald-400 rounded-lg py-1.5 px-2.5 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                        </div>
+                        <div>
+                            <label class="block text-xxs font-medium text-slate-400 mb-1">Lợi nhuận gộp (VND)</label>
+                            <input type="text" id="fin_gross_profit" value="24,000,000,000" oninput="formatAndCalc(this)" class="w-full text-right font-bold bg-slate-950 border border-slate-800 text-emerald-400 rounded-lg py-1.5 px-2.5 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-2 gap-3">
+                        <div>
+                            <label class="block text-xxs font-medium text-slate-400 mb-1">Lợi nhuận ròng (VND)</label>
+                            <input type="text" id="fin_profit" value="8,400,000,000" oninput="formatAndCalc(this)" class="w-full text-right font-bold bg-slate-950 border border-slate-800 text-emerald-400 rounded-lg py-1.5 px-2.5 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                        </div>
+                        <div>
+                            <label class="block text-xxs font-medium text-slate-400 mb-1">Chi phí khấu hao (VND)</label>
+                            <input type="text" id="fin_depreciation" value="2,100,000,000" oninput="formatAndCalc(this)" class="w-full text-right font-bold bg-slate-950 border border-slate-800 text-emerald-400 rounded-lg py-1.5 px-2.5 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-2 gap-3">
+                        <div>
+                            <label class="block text-xxs font-medium text-slate-400 mb-1">Phải thu Khách hàng (VND)</label>
+                            <input type="text" id="fin_ar" value="18,000,000,000" oninput="formatAndCalc(this)" class="w-full text-right font-bold bg-slate-950 border border-slate-800 text-slate-300 rounded-lg py-1.5 px-2.5 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                        </div>
+                        <div>
+                            <label class="block text-xxs font-medium text-slate-400 mb-1">Hàng tồn kho (VND)</label>
+                            <input type="text" id="fin_inventory" value="15,000,000,000" oninput="formatAndCalc(this)" class="w-full text-right font-bold bg-slate-950 border border-slate-800 text-slate-300 rounded-lg py-1.5 px-2.5 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-2 gap-3">
+                        <div>
+                            <label class="block text-xxs font-medium text-slate-400 mb-1">Phải trả Nhà cung cấp (VND)</label>
+                            <input type="text" id="fin_ap" value="10,000,000,000" oninput="formatAndCalc(this)" class="w-full text-right font-bold bg-slate-950 border border-slate-800 text-slate-300 rounded-lg py-1.5 px-2.5 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                        </div>
+                        <div>
+                            <label class="block text-xxs font-medium text-slate-400 mb-1">Vốn chủ sở hữu (VND)</label>
+                            <input type="text" id="fin_equity" value="35,000,000,000" oninput="formatAndCalc(this)" class="w-full text-right font-bold bg-slate-950 border border-slate-800 text-indigo-300 rounded-lg py-1.5 px-2.5 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-2 gap-3">
+                        <div>
+                            <label class="block text-xxs font-medium text-slate-400 mb-1">Tài sản Ngắn hạn (VND)</label>
+                            <input type="text" id="fin_current_assets" value="45,000,000,000" oninput="formatAndCalc(this)" class="w-full text-right font-bold bg-slate-950 border border-slate-800 text-slate-300 rounded-lg py-1.5 px-2.5 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                        </div>
+                        <div>
+                            <label class="block text-xxs font-medium text-slate-400 mb-1">Nợ Ngắn hạn (VND)</label>
+                            <input type="text" id="fin_current_liabilities" value="30,000,000,000" oninput="formatAndCalc(this)" class="w-full text-right font-bold bg-slate-950 border border-slate-800 text-slate-300 rounded-lg py-1.5 px-2.5 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                        </div>
+                    </div>
+
+                    <div>
+                        <label class="block text-xxs font-medium text-slate-400 mb-1">Tổng Nợ phải trả chịu lãi vay (VND)</label>
+                        <input type="text" id="fin_total_debt" value="25,000,000,000" oninput="formatAndCalc(this)" class="w-full text-right font-bold bg-slate-950 border border-slate-800 text-rose-400 rounded-lg py-1.5 px-2.5 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                    </div>
+                </div>
+            </div>
+
+            <!-- Commercial Contracts and Transaction Specifics -->
+            <div class="bg-slate-900 rounded-xl shadow-lg p-5 border border-slate-800">
+                <h2 class="text-xs font-bold text-indigo-400 uppercase tracking-wider mb-4 border-b border-slate-800 pb-2 flex items-center justify-between">
+                    <span class="flex items-center">
+                        <span class="w-2.5 h-2.5 bg-indigo-500 rounded-full mr-2"></span>
+                        Đặc thù Vận hành & Giao dịch Thực tế
+                    </span>
+                    <span class="text-xxs text-slate-500 font-normal">Cấu trúc</span>
+                </h2>
+
+                <div class="space-y-4">
+                    <div>
+                        <label class="block text-xxs font-semibold text-slate-300 mb-2">Kiểm soát Dòng tiền đầu ra (Khách hàng):</label>
+                        <div class="space-y-2">
+                            <label class="flex items-start text-xs text-slate-400 cursor-pointer hover:text-slate-200 transition">
+                                <input type="checkbox" id="spec_big_buyers" checked onchange="runEvaluation()" class="mt-0.5 mr-2 h-4 w-4 rounded bg-slate-950 text-indigo-600 focus:ring-indigo-500 border-slate-800">
+                                <span>Tệp Khách hàng mua là Tập đoàn lớn/Doanh nghiệp Nhà nước/FDI có xếp hạng tín nhiệm loại A trở lên</span>
+                            </label>
+                            <label class="flex items-start text-xs text-slate-400 cursor-pointer hover:text-slate-200 transition">
+                                <input type="checkbox" id="spec_export" checked onchange="runEvaluation()" class="mt-0.5 mr-2 h-4 w-4 rounded bg-slate-950 text-indigo-600 focus:ring-indigo-500 border-slate-800">
+                                <span>Thanh toán quốc tế được đảm bảo bởi L/C trả ngay/trả chậm hoặc Thư bảo lãnh nhận nợ ngân hàng đối tác</span>
+                            </label>
+                        </div>
+                    </div>
+
+                    <div>
+                        <label class="block text-xxs font-semibold text-slate-300 mb-2">Cơ sở tài trợ đầu vào & Vận hành:</label>
+                        <div class="space-y-2">
+                            <label class="flex items-start text-xs text-slate-400 cursor-pointer hover:text-slate-200 transition">
+                                <input type="checkbox" id="spec_machinery" onchange="runEvaluation()" class="mt-0.5 mr-2 h-4 w-4 rounded bg-slate-950 text-indigo-600 focus:ring-indigo-500 border-slate-800">
+                                <span>Dự phóng mở rộng/thay thế tài sản cố định: Máy móc, dây chuyền sản xuất, phương tiện vận tải lớn</span>
+                            </label>
+                            <label class="flex items-start text-xs text-slate-400 cursor-pointer hover:text-slate-200 transition">
+                                <input type="checkbox" id="spec_bidding" onchange="runEvaluation()" class="mt-0.5 mr-2 h-4 w-4 rounded bg-slate-950 text-indigo-600 focus:ring-indigo-500 border-slate-800">
+                                <span>Thường xuyên đấu thầu/thi công công trình lớn, có yêu cầu bảo lãnh dự thầu, bảo lãnh tạm ứng & thực hiện hợp đồng</span>
+                            </label>
+                            <label class="flex items-start text-xs text-slate-400 cursor-pointer hover:text-slate-200 transition">
+                                <input type="checkbox" id="spec_import" checked onchange="runEvaluation()" class="mt-0.5 mr-2 h-4 w-4 rounded bg-slate-950 text-indigo-600 focus:ring-indigo-500 border-slate-800">
+                                <span>Nhập khẩu trực tiếp nguyên vật liệu/hàng hóa từ nước ngoài, có hợp đồng thương mại ngoại thương hợp lệ</span>
+                            </label>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+        </section>
+
+        <!-- Right Column (Analysis & Decision Dashboard): 7 Cols -->
+        <section class="lg:col-span-7 flex flex-col space-y-6">
+            
+            <!-- Quick Credit Rating & Diagnostic Scorecard -->
+            <div class="bg-gradient-to-br from-slate-900 via-indigo-950 to-slate-950 rounded-xl shadow-xl p-5 text-white border border-indigo-500/20">
+                <div class="flex items-center justify-between border-b border-indigo-900/50 pb-3 mb-4">
+                    <div>
+                        <h3 class="text-xs font-bold uppercase tracking-wider text-indigo-300">Xếp hạng & Thẩm định Tín dụng Doanh nghiệp</h3>
+                        <p class="text-xxs text-slate-400 mt-0.5">Xác lập dựa trên trọng số tài chính và uy tín kinh doanh thực tế</p>
+                    </div>
+                    <span id="credit_rating_badge" class="px-3.5 py-1.5 bg-emerald-500 text-white text-xs font-black rounded-full shadow-lg border border-emerald-400/20">
+                        XẾP HẠNG: A
+                    </span>
+                </div>
+
+                <!-- Structured Appraisals Grid -->
+                <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
+                    <div class="bg-indigo-950/40 border border-indigo-800/20 p-3 rounded-lg">
+                        <span class="text-xxs text-indigo-300 block uppercase">Thanh toán Ngắn hạn (CR)</span>
+                        <p class="text-lg font-bold mt-0.5 text-slate-100" id="diagnostic_current_ratio">1.50</p>
+                        <span class="text-xxs font-medium" id="diagnostic_current_status">✔ Khá tốt</span>
+                    </div>
+                    <div class="bg-indigo-950/40 border border-indigo-800/20 p-3 rounded-lg">
+                        <span class="text-xxs text-indigo-300 block uppercase">Hệ số Đòn bẩy (D/E)</span>
+                        <p class="text-lg font-bold mt-0.5 text-slate-100" id="diagnostic_debt_equity">0.71</p>
+                        <span class="text-xxs font-medium" id="diagnostic_debt_status">✔ Lành mạnh</span>
+                    </div>
+                    <div class="bg-indigo-950/40 border border-indigo-800/20 p-3 rounded-lg">
+                        <span class="text-xxs text-indigo-300 block uppercase">Biên EBITDA</span>
+                        <p class="text-lg font-bold mt-0.5 text-slate-100" id="diagnostic_ebitda_margin">10.5%</p>
+                        <span class="text-xxs font-medium" id="diagnostic_ebitda_status">✔ Hiệu quả tốt</span>
+                    </div>
+                    <div class="bg-indigo-950/40 border border-indigo-800/20 p-3 rounded-lg">
+                        <span class="text-xxs text-indigo-300 block uppercase">Chu kỳ Tiền mặt (CCC)</span>
+                        <p class="text-lg font-bold mt-0.5 text-slate-100" id="diagnostic_ccc">75 ngày</p>
+                        <span class="text-xxs font-medium text-indigo-400" id="diagnostic_ccc_status">✔ Vòng quay nhanh</span>
+                    </div>
+                </div>
+
+                <div class="bg-slate-950/60 rounded-lg p-3.5 border border-slate-800 text-xs flex items-start space-x-2.5">
+                    <svg class="w-5 h-5 text-indigo-400 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                    </svg>
+                    <div>
+                        <span class="font-bold text-slate-200">Kết luận & Khuyến nghị của Ban Thẩm định:</span>
+                        <span id="diagnostic_recommendation" class="text-slate-300 block mt-1 leading-relaxed">Đang phân tích dữ liệu...</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Alternative Structured Financing Scorecard -->
+            <div class="bg-slate-900 rounded-xl shadow-lg p-5 border border-slate-800">
+                <div class="flex items-center justify-between border-b border-slate-800 pb-3 mb-4">
+                    <div>
+                        <h3 class="text-xs font-bold text-indigo-400 uppercase tracking-wider">Độ thích ứng Giải pháp & Cấu trúc Phê duyệt</h3>
+                        <p class="text-xxs text-slate-500 mt-0.5">Phân tích chuyên môn của Hội đồng Tín dụng</p>
+                    </div>
+                    <!-- Navigation Tabs -->
+                    <div class="flex space-x-1" id="tab_container">
+                        <button onclick="switchTab('tab_matrix')" id="btn_tab_matrix" class="px-3 py-1 text-xxs font-bold rounded-md bg-indigo-900 text-indigo-200 border border-indigo-700 transition">
+                            Giải pháp Tài trợ
+                        </button>
+                        <button onclick="switchTab('tab_memo')" id="btn_tab_memo" class="px-3 py-1 text-xxs font-bold rounded-md bg-slate-800 text-slate-300 border border-slate-700 hover:bg-slate-700 transition">
+                            Tờ trình Chi tiết
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Tab content 1: Solution matching scores and quick indicators -->
+                <div class="space-y-4" id="content_tab_matrix">
+                    <!-- Factoring -->
+                    <div class="bg-slate-950/40 p-3 rounded-lg border border-slate-800/60">
+                        <div class="flex justify-between items-start mb-1">
+                            <div>
+                                <span class="font-bold text-xs text-slate-200 flex items-center">
+                                    <svg class="w-4 h-4 text-indigo-400 mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"></path></svg>
+                                    1. Bao thanh toán & Chiết khấu Khoản phải thu (Factoring)
+                                </span>
+                                <p class="text-xxs text-slate-500 ml-5 mt-0.5" id="factoring_covenant">Tỷ lệ tài trợ (LTV) tối đa: 80% giá trị hóa đơn đã nghiệm thu.</p>
+                            </div>
+                            <div class="text-right">
+                                <span id="factoring_score" class="font-bold text-xs text-indigo-400">85%</span>
+                                <span id="factoring_status_badge" class="block text-xxs px-1.5 py-0.5 rounded mt-0.5 font-bold uppercase"></span>
+                            </div>
+                        </div>
+                        <div class="w-full bg-slate-800 rounded-full h-1.5 mt-1 ml-5">
+                            <div id="factoring_progress" class="bg-indigo-500 h-1.5 rounded-full animate-progress" style="width: 85%;"></div>
+                        </div>
+                    </div>
+
+                    <!-- Supply Chain Finance -->
+                    <div class="bg-slate-950/40 p-3 rounded-lg border border-slate-800/60">
+                        <div class="flex justify-between items-start mb-1">
+                            <div>
+                                <span class="font-bold text-xs text-slate-200 flex items-center">
+                                    <svg class="w-4 h-4 text-sky-400 mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"></path></svg>
+                                    2. Tài trợ Chuỗi cung ứng đầu ra (Supply Chain Finance - Distributor)
+                                </span>
+                                <p class="text-xxs text-slate-500 ml-5 mt-0.5" id="scf_covenant">Cơ chế chiết khấu thanh toán dựa trên uy tín và bảo lãnh thanh toán của Tập đoàn neo.</p>
+                            </div>
+                            <div class="text-right">
+                                <span id="scf_score" class="font-bold text-xs text-sky-400">70%</span>
+                                <span id="scf_status_badge" class="block text-xxs px-1.5 py-0.5 rounded mt-0.5 font-bold uppercase"></span>
+                            </div>
+                        </div>
+                        <div class="w-full bg-slate-800 rounded-full h-1.5 mt-1 ml-5">
+                            <div id="scf_progress" class="bg-sky-500 h-1.5 rounded-full animate-progress" style="width: 70%;"></div>
+                        </div>
+                    </div>
+
+                    <!-- Trade Finance -->
+                    <div class="bg-slate-950/40 p-3 rounded-lg border border-slate-800/60">
+                        <div class="flex justify-between items-start mb-1">
+                            <div>
+                                <span class="font-bold text-xs text-slate-200 flex items-center">
+                                    <svg class="w-4 h-4 text-emerald-400 mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9"></path></svg>
+                                    3. Tài trợ Thương mại quốc tế (L/C & UPAS Thư tín dụng trả chậm)
+                                </span>
+                                <p class="text-xxs text-slate-500 ml-5 mt-0.5" id="trade_covenant">Trì hoãn thời gian thanh toán nợ nước ngoài lên đến 180 ngày với mức lãi suất Libor cạnh tranh.</p>
+                            </div>
+                            <div class="text-right">
+                                <span id="trade_score" class="font-bold text-xs text-emerald-400">90%</span>
+                                <span id="trade_status_badge" class="block text-xxs px-1.5 py-0.5 rounded mt-0.5 font-bold uppercase"></span>
+                            </div>
+                        </div>
+                        <div class="w-full bg-slate-800 rounded-full h-1.5 mt-1 ml-5">
+                            <div id="trade_progress" class="bg-emerald-500 h-1.5 rounded-full animate-progress" style="width: 90%;"></div>
+                        </div>
+                    </div>
+
+                    <!-- Guarantees -->
+                    <div class="bg-slate-950/40 p-3 rounded-lg border border-slate-800/60">
+                        <div class="flex justify-between items-start mb-1">
+                            <div>
+                                <span class="font-bold text-xs text-slate-200 flex items-center">
+                                    <svg class="w-4 h-4 text-amber-400 mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4M7.835 4.697a3.42 3.42 0 001.946-.806 3.42 3.42 0 014.438 0 3.42 3.42 0 001.946.806 3.42 3.42 0 013.138 3.138 3.42 3.42 0 00.806 1.946 3.42 3.42 0 010 4.438 3.42 3.42 0 00-.806 1.946 3.42 3.42 0 01-3.138 3.138 3.42 3.42 0 00-1.946.806 3.42 3.42 0 01-4.438 0 3.42 3.42 0 00-1.946-.806 3.42 3.42 0 01-3.138-3.138 3.42 3.42 0 00-.806-1.946 3.42 3.42 0 010-4.438 3.42 3.42 0 00.806-1.946 3.42 3.42 0 013.138-3.138z"></path></svg>
+                                    4. Bảo lãnh Phi truyền thống (Bảo lãnh tạm ứng & Thực hiện hợp đồng)
+                                </span>
+                                <p class="text-xxs text-slate-500 ml-5 mt-0.5" id="guarantee_covenant">Tỷ lệ ký quỹ tối thiểu: 0% - 10% tùy thuộc vào giá trị hợp đồng gốc.</p>
+                            </div>
+                            <div class="text-right">
+                                <span id="guarantee_score" class="font-bold text-xs text-amber-400">45%</span>
+                                <span id="guarantee_status_badge" class="block text-xxs px-1.5 py-0.5 rounded mt-0.5 font-bold uppercase"></span>
+                            </div>
+                        </div>
+                        <div class="w-full bg-slate-800 rounded-full h-1.5 mt-1 ml-5">
+                            <div id="guarantee_progress" class="bg-amber-500 h-1.5 rounded-full animate-progress" style="width: 45%;"></div>
+                        </div>
+                    </div>
+
+                    <!-- Leasing -->
+                    <div class="bg-slate-950/40 p-3 rounded-lg border border-slate-800/60">
+                        <div class="flex justify-between items-start mb-1">
+                            <div>
+                                <span class="font-bold text-xs text-slate-200 flex items-center">
+                                    <svg class="w-4 h-4 text-purple-400 mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"></path></svg>
+                                    5. Cho thuê Tài chính (Financial Leasing)
+                                </span>
+                                <p class="text-xxs text-slate-500 ml-5 mt-0.5" id="leasing_covenant">Cơ cấu nợ trung dài hạn, không ảnh hưởng trực tiếp đến giới hạn vay ngắn hạn tại ngân hàng.</p>
+                            </div>
+                            <div class="text-right">
+                                <span id="leasing_score" class="font-bold text-xs text-purple-400">30%</span>
+                                <span id="leasing_status_badge" class="block text-xxs px-1.5 py-0.5 rounded mt-0.5 font-bold uppercase"></span>
+                            </div>
+                        </div>
+                        <div class="w-full bg-slate-800 rounded-full h-1.5 mt-1 ml-5">
+                            <div id="leasing_progress" class="bg-purple-500 h-1.5 rounded-full animate-progress" style="width: 30%;"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Tab content 2: Detailed credit committee memo table -->
+                <div class="hidden space-y-3" id="content_tab_memo">
+                    <p class="text-xxs text-slate-400 italic mb-2">Báo cáo tóm tắt các chốt thẩm định định lượng dựa trên tiêu chuẩn rủi ro chung:</p>
+                    <div class="overflow-x-auto">
+                        <table class="min-w-full text-left text-xxs text-slate-300">
+                            <thead class="bg-slate-950 text-slate-400 font-bold">
+                                <tr>
+                                    <th class="p-2 border-b border-slate-800">Chỉ số rủi ro</th>
+                                    <th class="p-2 border-b border-slate-800 text-center">Tiêu chuẩn chuẩn</th>
+                                    <th class="p-2 border-b border-slate-800 text-right">Giá trị thực tế</th>
+                                    <th class="p-2 border-b border-slate-800 text-center">Đánh giá rủi ro</th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-slate-800/50">
+                                <tr>
+                                    <td class="p-2 font-medium">Hệ số thanh toán hiện hành</td>
+                                    <td class="p-2 text-center">&ge; 1.20 lần</td>
+                                    <td class="p-2 text-right font-bold" id="memo_curr_ratio">1.50</td>
+                                    <td class="p-2 text-center" id="memo_curr_badge">Đạt</td>
+                                </tr>
+                                <tr>
+                                    <td class="p-2 font-medium">Đòn bẩy tài chính ròng (D/E)</td>
+                                    <td class="p-2 text-center">&le; 2.50 lần</td>
+                                    <td class="p-2 text-right font-bold" id="memo_debt_equity">0.71</td>
+                                    <td class="p-2 text-center" id="memo_debt_badge">Đạt</td>
+                                </tr>
+                                <tr>
+                                    <td class="p-2 font-medium">Biên Lợi nhuận ròng</td>
+                                    <td class="p-2 text-center">&ge; 3.0%</td>
+                                    <td class="p-2 text-right font-bold" id="memo_profit_margin">7.0%</td>
+                                    <td class="p-2 text-center" id="memo_profit_badge">Đạt</td>
+                                </tr>
+                                <tr>
+                                    <td class="p-2 font-medium">Xếp hạng lịch sử tín dụng</td>
+                                    <td class="p-2 text-center">CIC Nhóm 1</td>
+                                    <td class="p-2 text-right font-bold" id="memo_cic">Nhóm 1</td>
+                                    <td class="p-2 text-center" id="memo_cic_badge">Đạt</td>
+                                </tr>
+                                <tr>
+                                    <td class="p-2 font-medium">Chu kỳ tiền mặt ròng (CCC)</td>
+                                    <td class="p-2 text-center">&le; 120 ngày</td>
+                                    <td class="p-2 text-right font-bold" id="memo_ccc">75 ngày</td>
+                                    <td class="p-2 text-center" id="memo_ccc_badge">Đạt</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+            </div>
+
+            <!-- Visual Breakdown Chart -->
+            <div class="bg-slate-900 rounded-xl shadow-lg p-5 border border-slate-800">
+                <div class="flex items-center justify-between mb-4">
+                    <h3 class="text-xs font-bold text-slate-400 uppercase tracking-wider">Phân tích đa trục - Độ tương thích sản phẩm</h3>
+                    <span class="text-xxs text-slate-500">Chuẩn hóa % khả năng phê duyệt</span>
+                </div>
+                <div class="w-full h-64 flex items-center justify-center">
+                    <canvas id="suitabilityChart"></canvas>
+                </div>
+            </div>
+
+        </section>
+
+    </main>
+
+
+    <!-- FORM MODAL: Register for Consultation -->
+    <div id="registerModal" class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 hidden items-center justify-center p-4 transition-all duration-300">
+        
+        <div class="bg-white rounded-2xl shadow-2xl w-full max-w-lg p-6 md:p-8 transform transition-all scale-100 flex flex-col max-h-[90vh]">
+            
+            <div class="flex justify-between items-center mb-6 pb-2 border-b border-slate-100">
+                <h2 class="text-2xl font-bold text-slate-800 tracking-tight">
+                    Đăng ký tư vấn
+                </h2>
+                <button onclick="closeRegisterModal()"
+                        type="button"
+                        class="text-slate-400 hover:text-rose-500 hover:bg-slate-100 p-2 rounded-xl transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-slate-200"
+                        aria-label="Đóng">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                </button>
+            </div>
+
+            <form id="registerForm" class="space-y-5 overflow-y-auto pr-1 flex-1">
+
+                <div>
+                    <label for="fullName" class="block text-sm font-semibold text-slate-700 mb-1.5">Họ & Tên <span class="text-rose-500">*</span></label>
+                    <input id="fullName"
+                        type="text"
+                        required
+                        placeholder="Nguyễn Văn A"
+                        class="w-full border border-slate-300 rounded-xl px-4 py-2.5 text-slate-900 placeholder:text-slate-400 focus:outline-none focus:border-blue-600 focus:ring-4 focus:ring-blue-600/10 transition-all shadow-sm">
+                </div>
+
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                        <label for="phone" class="block text-sm font-semibold text-slate-700 mb-1.5">Số điện thoại <span class="text-rose-500">*</span></label>
+                        <input id="phone"
+                            type="tel"
+                            required
+                            placeholder="0901234567"
+                            class="w-full border border-slate-300 rounded-xl px-4 py-2.5 text-slate-900 placeholder:text-slate-400 focus:outline-none focus:border-blue-600 focus:ring-4 focus:ring-blue-600/10 transition-all shadow-sm">
+                    </div>
+
+                    <div>
+                        <label for="email" class="block text-sm font-semibold text-slate-700 mb-1.5">Email <span class="text-rose-500">*</span></label>
+                        <input id="email"
+                            type="email"
+                            required
+                            placeholder="example@gmail.com"
+                            class="w-full border border-slate-300 rounded-xl px-4 py-2.5 text-slate-900 placeholder:text-slate-400 focus:outline-none focus:border-blue-600 focus:ring-4 focus:ring-blue-600/10 transition-all shadow-sm">
+                    </div>
+                </div>
+
+                <div>
+                    <label for="businessType" class="block text-sm font-semibold text-slate-700 mb-1.5">Loại hình doanh nghiệp <span class="text-rose-500">*</span></label>
+                    <div class="relative">
+                        <select id="businessType"
+                                required
+                                class="w-full appearance-none border border-slate-300 rounded-xl px-4 py-2.5 text-slate-900 bg-white focus:outline-none focus:border-blue-600 focus:ring-4 focus:ring-blue-600/10 transition-all shadow-sm">
+                            <option value="" disabled selected hidden>Chọn loại hình</option>
+                            <option value="TNHH">Công ty TNHH</option>
+                            <option value="Cổ phần">Công ty Cổ phần</option>
+                            <option value="Tư nhân">Doanh nghiệp tư nhân</option>
+                            <option value="Hộ kinh doanh">Hộ kinh doanh</option>
+                            <option value="Khác">Khác</option>
+                        </select>
+                        <div class="pointer-events-none absolute inset-y-0 right-0 flex items-center px-4 text-slate-500">
+                            <svg class="fill-current h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path d="M9.293 12.95l.707.707L15.657 8l-1.414-1.414L10 10.828 5.757 6.586 4.343 8z"/></svg>
+                        </div>
+                    </div>
+                </div>
+
+                <div>
+                    <label for="enterpriseRegistrationNumber" class="block text-sm font-semibold text-slate-700 mb-1.5">
+                        Số đăng ký hạn mức doanh nghiệp
+                    </label>
+                    <input id="enterpriseRegistrationNumber"
+                        type="text"
+                        placeholder="Nhập mã số đăng ký"
+                        class="w-full border border-slate-300 rounded-xl px-4 py-2.5 text-slate-900 placeholder:text-slate-400 focus:outline-none focus:border-blue-600 focus:ring-4 focus:ring-blue-600/10 transition-all shadow-sm">
+                </div>
+
+                <div>
+                    <label for="supportStaffCode" class="block text-sm font-semibold text-slate-700 mb-1.5">
+                        Mã nhân viên hỗ trợ (nếu có)
+                    </label>
+                    <input id="supportStaffCode"
+                        type="text"
+                        placeholder="VD: NV0123"
+                        class="w-full border border-slate-300 rounded-xl px-4 py-2.5 text-slate-900 placeholder:text-slate-400 focus:outline-none focus:border-blue-600 focus:ring-4 focus:ring-blue-600/10 transition-all shadow-sm">
+                </div>
+
+                <div class="flex items-center justify-end gap-3 pt-4 border-t border-slate-100 sticky bottom-0 bg-white">
+                    <button type="button"
+                            onclick="closeRegisterModal()"
+                            class="px-5 py-2.5 rounded-xl border border-slate-300 text-slate-700 font-medium hover:bg-slate-50 active:bg-slate-100 focus:outline-none focus:ring-4 focus:ring-slate-100 transition-all duration-200">
+                        Hủy
+                    </button>
+                    <button type="submit"
+                            class="px-5 py-2.5 rounded-xl bg-blue-600 text-white font-medium hover:bg-blue-700 active:bg-blue-800 shadow-lg shadow-blue-600/20 focus:outline-none focus:ring-4 focus:ring-blue-600/30 transition-all duration-200">
+                        Gửi đăng ký
+                    </button>
+                </div>
+
+            </form>
         </div>
-        <table>
-            <thead>
-                <tr>
-                    <th style="width: 15%;">STT</th>
-                    <th style="width: 55%;">UID</th>
-                    <th style="width: 30%;">Trạng thái</th>
-                </tr>
-            </thead>
-            <tbody id="uid-table-body">
-                <tr>
-                    <td colspan="3" style="text-align: center; color: #a0aec0; padding: 30px;">
-                        Vui lòng bấm nút "Up File UID" để tải danh sách lên.
-                    </td>
-                </tr>
-            </tbody>
-        </table>
     </div>
-</div>
 
-<script>
-    const fileUpload = document.getElementById('file-upload');
-    const fileName = document.getElementById('file-name');
-    const tableBody = document.getElementById('uid-table-body');
-    const totalCount = document.getElementById('total-count');
-    const btnStart = document.getElementById('btn-start');
-    const messageInput = document.getElementById('message-input');
+    <!-- Custom Elegant Notification Toast -->
+    <div id="toast" class="fixed bottom-5 right-5 bg-slate-900 text-white text-xs px-4 py-3 rounded-lg shadow-2xl transform translate-y-20 opacity-0 transition-all duration-300 flex items-center space-x-2.5 z-50 border border-indigo-500/30">
+        <span class="bg-emerald-500 text-white rounded-full p-1 text-[10px] font-bold">✓</span>
+        <span id="toast_msg" class="font-medium text-slate-200">Đã chẩn đoán cấu trúc tài chính thành công!</span>
+    </div>
 
-    // Xử lý đọc file .txt khi người dùng chọn file (Nút Up)
-    fileUpload.addEventListener('change', function(e) {
-    const file = e.target.files[0];
-    if (!file) {
-        fileName.textContent = 'Chưa chọn file nào';
-        return;
-    }
+    <!-- Footer -->
+    <footer class="bg-slate-950 text-slate-600 text-center py-4 text-xs border-t border-slate-900 mt-auto">
+        <p>© 2026 HTLAND Finance Engine. Phiên bản hệ thống thẩm định tín dụng phi truyền thống doanh nghiệp cấp cao.</p>
+    </footer>
 
-    fileName.textContent = file.name;
+    <script>
+        let suitabilityChartObj = null;
+        let activeTab = 'tab_matrix';
 
-        const reader = new FileReader();
-        reader.onload = function(progressEvent) {
-            const text = progressEvent.target.result;
-            
-            // Tách các dòng trong file, lọc bỏ khoảng trắng và dòng trống
-            const uids = text.split('\n')
-                            .map(line => line.trim())
-                            .filter(line => line.length > 0);
-
-            // Cập nhật số lượng đếm
-            totalCount.textContent = `Tổng số: ${uids.length}`;
-
-            // Xóa dữ liệu cũ trong bảng và chèn dữ liệu mới
-            console.log("Reset")
-            tableBody.innerHTML = '';
-            
-            if (uids.length === 0) {
-                tableBody.innerHTML = `<tr><td colspan="3" style="text-align: center; color: #a0aec0; padding: 30px;">File không có dữ liệu UID hợp lệ.</td></tr>`;
-                return;
+        const presets = {
+            manufacturing: {
+                corp_sector: "manufacturing",
+                op_years: "4",
+                cic_status: "cic1",
+                financial_audit: "audited_big4",
+                fin_revenue: 150000000000,
+                fin_gross_profit: 32000000000,
+                fin_profit: 12000000000,
+                fin_depreciation: 3100000000,
+                fin_ar: 22000000000,
+                fin_inventory: 28000000000,
+                fin_ap: 14000000000,
+                fin_current_assets: 65000000000,
+                fin_current_liabilities: 35000000000,
+                fin_total_debt: 22000000000,
+                fin_equity: 45000000000,
+                spec_big_buyers: true,
+                spec_export: true,
+                spec_machinery: true,
+                spec_bidding: false,
+                spec_import: true
+            },
+            contractor: {
+                corp_sector: "contractor",
+                op_years: "4",
+                cic_status: "cic1",
+                financial_audit: "audited_local",
+                fin_revenue: 220000000000,
+                fin_gross_profit: 26000000000,
+                fin_profit: 6500000000,
+                fin_depreciation: 1800000000,
+                fin_ar: 65000000000,
+                fin_inventory: 15000000000,
+                fin_ap: 45000000000,
+                fin_current_assets: 95000000000,
+                fin_current_liabilities: 75000000000,
+                fin_total_debt: 38000000000,
+                fin_equity: 35000000000,
+                spec_big_buyers: true,
+                spec_export: false,
+                spec_machinery: true,
+                spec_bidding: true,
+                spec_import: false
+            },
+            trading: {
+                corp_sector: "trading",
+                op_years: "2",
+                cic_status: "cic1",
+                financial_audit: "unaudited_tax",
+                fin_revenue: 80000000000,
+                fin_gross_profit: 11000000000,
+                fin_profit: 2400000000,
+                fin_depreciation: 600000000,
+                fin_ar: 8000000000,
+                fin_inventory: 12000000000,
+                fin_ap: 7000000000,
+                fin_current_assets: 25000000000,
+                fin_current_liabilities: 18000000000,
+                fin_total_debt: 12000000000,
+                fin_equity: 11000000000,
+                spec_big_buyers: true,
+                spec_export: false,
+                spec_machinery: false,
+                spec_bidding: false,
+                spec_import: true
             }
-
-            uids.forEach((uid, index) => {
-                const row = document.createElement('tr');
-                row.innerHTML = `
-                    <td>${index + 1}</td>
-                    <td>${uid}</td>
-                    <td><span class="status-badge">Sẵn sàng</span></td>
-                `;
-                tableBody.appendChild(row);
-            });
-
-            // --- ĐOẠN THÊM VÀO ---
-            // Reset giá trị input về rỗng để nếu chọn lại cùng file này vẫn kích hoạt sự kiện 'change'
-            fileUpload.value = ''; 
-            // ---------------------
         };
 
-        reader.readAsText(file);
-    });
+        function switchTab(tabId) {
+            activeTab = tabId;
+            const matrixBtn = document.getElementById('btn_tab_matrix');
+            const memoBtn = document.getElementById('btn_tab_memo');
+            const matrixContent = document.getElementById('content_tab_matrix');
+            const memoContent = document.getElementById('content_tab_memo');
 
-    // Bắt sự kiện nút Start (Ví dụ cơ bản)
-    btnStart.addEventListener('click', function() {
-        const message = messageInput.value.trim();
-        if (!message) {
-            alert('Vui lòng nhập nội dung tin nhắn trước khi bắt đầu!');
-            return;
+            if (tabId === 'tab_matrix') {
+                matrixBtn.className = "px-3 py-1 text-xxs font-bold rounded-md bg-indigo-900 text-indigo-200 border border-indigo-700 transition";
+                memoBtn.className = "px-3 py-1 text-xxs font-bold rounded-md bg-slate-800 text-slate-300 border border-slate-700 hover:bg-slate-700 transition";
+                matrixContent.classList.remove('hidden');
+                memoContent.classList.add('hidden');
+            } else {
+                memoBtn.className = "px-3 py-1 text-xxs font-bold rounded-md bg-indigo-900 text-indigo-200 border border-indigo-700 transition";
+                matrixBtn.className = "px-3 py-1 text-xxs font-bold rounded-md bg-slate-800 text-slate-300 border border-slate-700 hover:bg-slate-700 transition";
+                matrixContent.classList.add('hidden');
+                memoContent.classList.remove('hidden');
+            }
         }
-        
-        // Bạn có thể viết thêm logic kết nối API xử lý gửi ở đây
-        alert('Đã kích hoạt tiến trình gửi tin nhắn!');
-    });
-</script>
 
+        function applyPreset(presetKey) {
+            const preset = presets[presetKey];
+            if (!preset) return;
+
+            document.getElementById('corp_sector').value = preset.corp_sector;
+            document.getElementById('op_years').value = preset.op_years;
+            document.getElementById('cic_status').value = preset.cic_status;
+            document.getElementById('financial_audit').value = preset.financial_audit;
+            
+            document.getElementById('fin_revenue').value = preset.fin_revenue.toLocaleString('en-US');
+            document.getElementById('fin_gross_profit').value = preset.fin_gross_profit.toLocaleString('en-US');
+            document.getElementById('fin_profit').value = preset.fin_profit.toLocaleString('en-US');
+            document.getElementById('fin_depreciation').value = preset.fin_depreciation.toLocaleString('en-US');
+            document.getElementById('fin_ar').value = preset.fin_ar.toLocaleString('en-US');
+            document.getElementById('fin_inventory').value = preset.fin_inventory.toLocaleString('en-US');
+            document.getElementById('fin_ap').value = preset.fin_ap.toLocaleString('en-US');
+            document.getElementById('fin_current_assets').value = preset.fin_current_assets.toLocaleString('en-US');
+            document.getElementById('fin_current_liabilities').value = preset.fin_current_liabilities.toLocaleString('en-US');
+            document.getElementById('fin_total_debt').value = preset.fin_total_debt.toLocaleString('en-US');
+            document.getElementById('fin_equity').value = preset.fin_equity.toLocaleString('en-US');
+
+            document.getElementById('spec_big_buyers').checked = preset.spec_big_buyers;
+            document.getElementById('spec_export').checked = preset.spec_export;
+            document.getElementById('spec_machinery').checked = preset.spec_machinery;
+            document.getElementById('spec_bidding').checked = preset.spec_bidding;
+            document.getElementById('spec_import').checked = preset.spec_import;
+
+            let name = "Sản xuất & Xuất khẩu";
+            if (presetKey === 'contractor') name = "Nhà thầu xây dựng";
+            if (presetKey === 'trading') name = "Phân phối thương mại";
+
+            showToast(`Đã áp dụng mẫu dữ liệu: ${name}`);
+            runEvaluation();
+        }
+
+        function formatAndCalc(input) {
+            let value = input.value.replace(/[^0-9]/g, '');
+            if (value === "") {
+                input.value = "0";
+                return;
+            }
+            input.value = parseFloat(value).toLocaleString('en-US');
+            runEvaluation();
+        }
+
+        function getFloatVal(id) {
+            let rawValue = document.getElementById(id).value.replace(/,/g, '');
+            return parseFloat(rawValue) || 0;
+        }
+
+        function showToast(message) {
+            const toast = document.getElementById('toast');
+            document.getElementById('toast_msg').innerText = message;
+            toast.classList.remove('translate-y-20', 'opacity-0');
+            setTimeout(() => {
+                toast.classList.add('translate-y-20', 'opacity-0');
+            }, 2500);
+        }
+
+        function runEvaluation() {
+            const sector = document.getElementById('corp_sector').value;
+            const opYears = parseInt(document.getElementById('op_years').value);
+            const cic = document.getElementById('cic_status').value;
+            const audit = document.getElementById('financial_audit').value;
+
+            const rev = getFloatVal('fin_revenue');
+            const gp = getFloatVal('fin_gross_profit');
+            const profit = getFloatVal('fin_profit');
+            const depreciation = getFloatVal('fin_depreciation');
+            const ar = getFloatVal('fin_ar');
+            const inventory = getFloatVal('fin_inventory');
+            const ap = getFloatVal('fin_ap');
+            const currentAssets = getFloatVal('fin_current_assets');
+            const currentLiabilities = getFloatVal('fin_current_liabilities');
+            const totalDebt = getFloatVal('fin_total_debt');
+            const equity = getFloatVal('fin_equity');
+
+            const hasBigBuyers = document.getElementById('spec_big_buyers').checked;
+            const hasExport = document.getElementById('spec_export').checked;
+            const hasMachineryNeeded = document.getElementById('spec_machinery').checked;
+            const isBiddingContractor = document.getElementById('spec_bidding').checked;
+            const hasImportNeeded = document.getElementById('spec_import').checked;
+
+            // 1. Ratios Calculations
+            const currentRatio = currentLiabilities === 0 ? 0 : (currentAssets / currentLiabilities);
+            const debtToEquity = equity === 0 ? 0 : (totalDebt / equity);
+            
+            // Standard EBITDA Calculation with interest expense proxy (~8% of total debt)
+            const interestExpense = totalDebt * 0.08;
+            const ebitda = profit + depreciation + interestExpense;
+            const ebitdaMargin = rev === 0 ? 0 : (ebitda / rev);
+
+            // Cash Cycle (CCC)
+            const costOfGoodsSold = rev - gp;
+            const dso = rev === 0 ? 0 : (ar / rev) * 360;
+            const dio = costOfGoodsSold === 0 ? 0 : (inventory / costOfGoodsSold) * 360;
+            const dpo = costOfGoodsSold === 0 ? 0 : (ap / costOfGoodsSold) * 360;
+            const ccc = dso + dio - dpo;
+
+            // Update Metrics Display
+            document.getElementById('diagnostic_current_ratio').innerText = currentRatio.toFixed(2) + "x";
+            const curStatus = document.getElementById('diagnostic_current_status');
+            const memoCurrBadge = document.getElementById('memo_curr_badge');
+            document.getElementById('memo_curr_ratio').innerText = currentRatio.toFixed(2) + "x";
+            if (currentRatio >= 1.5) {
+                curStatus.innerText = "✔ An toàn";
+                curStatus.className = "text-xxs text-emerald-400 font-semibold";
+                memoCurrBadge.innerText = "ĐẠT";
+                memoCurrBadge.className = "p-2 text-center text-emerald-400 font-bold";
+            } else if (currentRatio >= 1.1) {
+                curStatus.innerText = "⚠ Trung bình";
+                curStatus.className = "text-xxs text-amber-400 font-semibold";
+                memoCurrBadge.innerText = "XEM XÉT";
+                memoCurrBadge.className = "p-2 text-center text-amber-400 font-bold";
+            } else {
+                curStatus.innerText = "✖ Rủi ro cao";
+                curStatus.className = "text-xxs text-rose-400 font-semibold";
+                memoCurrBadge.innerText = "KHÔNG ĐẠT";
+                memoCurrBadge.className = "p-2 text-center text-rose-400 font-bold";
+            }
+
+            document.getElementById('diagnostic_debt_equity').innerText = debtToEquity.toFixed(2) + "x";
+            const debtStatus = document.getElementById('diagnostic_debt_status');
+            const memoDebtBadge = document.getElementById('memo_debt_badge');
+            document.getElementById('memo_debt_equity').innerText = debtToEquity.toFixed(2) + "x";
+            if (debtToEquity <= 1.2) {
+                debtStatus.innerText = "✔ An toàn";
+                debtStatus.className = "text-xxs text-emerald-400 font-semibold";
+                memoDebtBadge.innerText = "ĐẠT";
+                memoDebtBadge.className = "p-2 text-center text-emerald-400 font-bold";
+            } else if (debtToEquity <= 2.5) {
+                debtStatus.innerText = "⚠ Đòn bẩy cao";
+                debtStatus.className = "text-xxs text-amber-400 font-semibold";
+                memoDebtBadge.innerText = "ĐẠT";
+                memoDebtBadge.className = "p-2 text-center text-emerald-400 font-bold";
+            } else {
+                debtStatus.innerText = "✖ Cực kỳ nguy hiểm";
+                debtStatus.className = "text-xxs text-rose-400 font-semibold";
+                memoDebtBadge.innerText = "KHÔNG ĐẠT";
+                memoDebtBadge.className = "p-2 text-center text-rose-400 font-bold";
+            }
+
+            document.getElementById('diagnostic_ebitda_margin').innerText = (ebitdaMargin * 100).toFixed(1) + "%";
+            const ebitdaStatus = document.getElementById('diagnostic_ebitda_status');
+            const memoProfitBadge = document.getElementById('memo_profit_badge');
+            const netProfitMargin = rev === 0 ? 0 : (profit / rev);
+            document.getElementById('memo_profit_margin').innerText = (netProfitMargin * 100).toFixed(1) + "%";
+            if (ebitdaMargin >= 0.10) {
+                ebitdaStatus.innerText = "✔ Sinh lời tốt";
+                ebitdaStatus.className = "text-xxs text-emerald-400 font-semibold";
+            } else if (ebitdaMargin >= 0.04) {
+                ebitdaStatus.innerText = "✔ Trung bình";
+                ebitdaStatus.className = "text-xxs text-amber-400 font-semibold";
+            } else {
+                ebitdaStatus.innerText = "✖ Biên mỏng";
+                ebitdaStatus.className = "text-xxs text-rose-400 font-semibold";
+            }
+            if (netProfitMargin >= 0.03) {
+                memoProfitBadge.innerText = "ĐẠT";
+                memoProfitBadge.className = "p-2 text-center text-emerald-400 font-bold";
+            } else {
+                memoProfitBadge.innerText = "XEM XÉT";
+                memoProfitBadge.className = "p-2 text-center text-amber-400 font-bold";
+            }
+
+            document.getElementById('diagnostic_ccc').innerText = Math.round(ccc) + " ngày";
+            const cccStatus = document.getElementById('diagnostic_ccc_status');
+            const memoCccBadge = document.getElementById('memo_ccc_badge');
+            document.getElementById('memo_ccc').innerText = Math.round(ccc) + " ngày";
+            if (ccc <= 60) {
+                cccStatus.innerText = "✔ Vòng quay rất nhanh";
+                cccStatus.className = "text-xxs text-emerald-400 font-semibold";
+                memoCccBadge.innerText = "XUẤT SẮC";
+                memoCccBadge.className = "p-2 text-center text-emerald-400 font-bold";
+            } else if (ccc <= 120) {
+                cccStatus.innerText = "✔ Trung bình";
+                cccStatus.className = "text-xxs text-indigo-400 font-semibold";
+                memoCccBadge.innerText = "ĐẠT";
+                memoCccBadge.className = "p-2 text-center text-indigo-400 font-bold";
+            } else {
+                cccStatus.innerText = "✖ Dòng tiền đọng lâu";
+                cccStatus.className = "text-xxs text-amber-400 font-semibold";
+                memoCccBadge.innerText = "XEM XÉT";
+                memoCccBadge.className = "p-2 text-center text-amber-400 font-bold";
+            }
+
+            // CIC Status Update
+            document.getElementById('memo_cic').innerText = cic === 'cic1' ? "Nhóm 1" : cic === 'cic2' ? "Nhóm 2" : "Nhóm 3-5";
+            const memoCicBadge = document.getElementById('memo_cic_badge');
+            if (cic === 'cic1') {
+                memoCicBadge.innerText = "ĐẠT";
+                memoCicBadge.className = "p-2 text-center text-emerald-400 font-bold";
+            } else if (cic === 'cic2') {
+                memoCicBadge.innerText = "Hạn chế";
+                memoCicBadge.className = "p-2 text-center text-amber-400 font-bold";
+            } else {
+                memoCicBadge.innerText = "TỪ CHỐI";
+                memoCicBadge.className = "p-2 text-center text-rose-400 font-bold";
+            }
+
+            // 2. Base Credit Rating Score
+            let score = 30;
+            if (cic === 'cic1') score += 25;
+            else if (cic === 'cic2') score += 5;
+            else score -= 45;
+
+            if (audit === 'audited_big4') score += 15;
+            else if (audit === 'audited_local') score += 8;
+            
+            if (opYears >= 4) score += 10;
+            else if (opYears >= 2) score += 5;
+
+            if (currentRatio >= 1.5) score += 10;
+            else if (currentRatio >= 1.1) score += 5;
+
+            if (debtToEquity <= 1.2) score += 10;
+            else if (debtToEquity <= 2.5) score += 5;
+
+            score = Math.min(100, Math.max(0, score));
+
+            let rating = "D";
+            let badgeColor = "bg-rose-500 border-rose-400/30 text-white";
+            if (score >= 90) { rating = "AAA"; badgeColor = "bg-indigo-600 border-indigo-400/30 text-white"; }
+            else if (score >= 80) { rating = "AA"; badgeColor = "bg-emerald-600 border-emerald-400/30 text-emerald-100"; }
+            else if (score >= 70) { rating = "A"; badgeColor = "bg-emerald-500 border-emerald-400/20 text-emerald-50"; }
+            else if (score >= 60) { rating = "BBB"; badgeColor = "bg-slate-700 border-slate-600/30 text-slate-100"; }
+            else if (score >= 50) { rating = "BB"; badgeColor = "bg-amber-500 border-amber-400/30 text-slate-900"; }
+            else if (score >= 40) { rating = "B"; badgeColor = "bg-orange-600 border-orange-500/30 text-white"; }
+
+            const ratingBadge = document.getElementById('credit_rating_badge');
+            ratingBadge.innerText = `XẾP HẠNG: ${rating} (${score} Điểm)`;
+            ratingBadge.className = `px-3.5 py-1.5 text-xs font-black rounded-full shadow-lg border ${badgeColor}`;
+
+            // 3. Dynamic Sector Weights (Sự thích ứng mô hình giải pháp chuyên sâu)
+            let factoringScore = 20, scfScore = 20, tradeScore = 20, guaranteeScore = 10, leasingScore = 15;
+
+            if (sector === 'manufacturing') {
+                // Ưu tiên: L/C UPAS (Nhập khẩu nguyên liệu) -> Bao thanh toán (Hóa đơn đầu ra) -> Cho thuê tài chính (Máy móc)
+                factoringScore += (hasBigBuyers ? 40 : 15) + (dso > 45 ? 20 : 10) + (currentRatio > 1.2 ? 10 : 0);
+                scfScore += (hasBigBuyers ? 35 : 10) + (dpo > 30 ? 15 : 5);
+                tradeScore += (hasImportNeeded ? 35 : 10) + (hasExport ? 25 : 5) + (audit !== 'unaudited_tax' ? 10 : 0);
+                guaranteeScore += (isBiddingContractor ? 40 : 10);
+                leasingScore += (hasMachineryNeeded ? 45 : 10) + (opYears >= 4 ? 15 : 5);
+            } else if (sector === 'contractor') {
+                // Ưu tiên: Bảo lãnh thi công/tạm ứng (Đấu thầu thầu xây dựng) -> Thiết bị thi công (Leasing) -> Factoring (Nghiệm thu thanh toán chậm)
+                factoringScore += (hasBigBuyers ? 30 : 10) + (dso > 60 ? 30 : 10);
+                scfScore += (hasBigBuyers ? 20 : 5);
+                tradeScore += (hasImportNeeded ? 15 : 0) + (hasExport ? 10 : 0);
+                guaranteeScore += (isBiddingContractor ? 60 : 20) + (opYears >= 4 ? 15 : 5);
+                leasingScore += (hasMachineryNeeded ? 40 : 15) + (debtToEquity > 1.5 ? 15 : 5); // Đòn bẩy cao chuyển qua thuê tài chính để làm đẹp bảng cân đối
+            } else if (sector === 'trading') {
+                // Ưu tiên: Tài trợ Chuỗi phân phối (Distributor Finance) -> Bao thanh toán nợ phải thu sỉ -> L/C thương mại sỉ quốc tế
+                factoringScore += (hasBigBuyers ? 35 : 15) + (dso > 30 ? 25 : 10);
+                scfScore += (hasBigBuyers ? 50 : 20) + (currentRatio > 1.1 ? 15 : 0);
+                tradeScore += (hasImportNeeded ? 30 : 5) + (hasExport ? 15 : 0);
+                guaranteeScore += (isBiddingContractor ? 20 : 0);
+                leasingScore += (hasMachineryNeeded ? 20 : 5);
+            }
+
+            // Quy phạt nợ xấu
+            if (cic === 'cic3') {
+                factoringScore = 5; scfScore = 0; tradeScore = 0; guaranteeScore = 0; leasingScore = 5;
+            } else if (cic === 'cic2') {
+                factoringScore = Math.round(factoringScore * 0.6);
+                scfScore = Math.round(scfScore * 0.5);
+                tradeScore = Math.round(tradeScore * 0.5);
+                guaranteeScore = Math.round(guaranteeScore * 0.6);
+                leasingScore = Math.round(leasingScore * 0.7);
+            }
+
+            factoringScore = Math.min(100, Math.max(0, factoringScore));
+            scfScore = Math.min(100, Math.max(0, scfScore));
+            tradeScore = Math.min(100, Math.max(0, tradeScore));
+            guaranteeScore = Math.min(100, Math.max(0, guaranteeScore));
+            leasingScore = Math.min(100, Math.max(0, leasingScore));
+
+            updateProgress('factoring', factoringScore);
+            updateProgress('scf', scfScore);
+            updateProgress('trade', tradeScore);
+            updateProgress('guarantee', guaranteeScore);
+            updateProgress('leasing', leasingScore);
+
+            // 4. Dynamic Covenants & Details for each industry sector
+            if (sector === 'manufacturing') {
+                document.getElementById('factoring_covenant').innerText = factoringScore >= 70 ? 
+                    `CHẤP THUẬN SX: Tài trợ LTV tối đa ${score >= 80 ? '85%' : '80%'} nợ phải thu từ tệp mua FDI/Chuỗi siêu thị. Kiểm soát qua tài khoản chuyên thu.` : 
+                    `YÊU CẦU BỔ SUNG: Biên lợi nhuận gộp yếu. Cần cam kết thanh toán trực tiếp của nhà phân phối neo hoặc ký quỹ bổ sung 15%.`;
+
+                document.getElementById('scf_covenant').innerText = scfScore >= 70 ?
+                    `CHẤP THUẬN CHUỖI SX: Kết nối thanh toán tự động qua hệ thống ERP liên kết với NCC nguyên vật liệu chiến lược.` :
+                    `YÊU CẦU: Khách hàng chưa ký kết thỏa thuận ba bên (Tripartite Agreement) với NCC lớn.`;
+
+                document.getElementById('trade_covenant').innerText = tradeScore >= 70 ?
+                    `CHẤP THUẬN L/C: Cấp hạn mức UPAS L/C nhập khẩu hạt nhựa/thép nguyên liệu. Miễn ký quỹ L/C lên tới ${score >= 80 ? '100%' : '90%'} nợ.` :
+                    `HẠN CHẾ: Doanh nghiệp chỉ có báo cáo thuế chưa kiểm toán. Yêu cầu ký quỹ bảo đảm tối thiểu 40% để mở L/C nhập khẩu.`;
+
+                document.getElementById('guarantee_covenant').innerText = guaranteeScore >= 70 ?
+                    `CHẤP THUẬN BẢO LÃNH: Hỗ trợ phát hành BL thực hiện HĐ xuất khẩu sản phẩm cơ khí công nghiệp.` :
+                    `HẠN CHẾ: Ngành nghề cốt lõi là sản xuất hàng tiêu dùng, ít phát sinh thầu xây lắp công trình lớn.`;
+
+                document.getElementById('leasing_covenant').innerText = leasingScore >= 70 ?
+                    `CHẤP THUẬN THUÊ MUA: Tài trợ mua sắm máy móc CNC/Dây chuyền bao bì mới 90%. Miễn tài sản bảo đảm là BĐS.` :
+                    `HẠN CHẾ: Chưa xác lập kế hoạch đầu tư TSCĐ trong 12 tháng tới hoặc tuổi đời doanh nghiệp dưới 2 năm.`;
+            } 
+            else if (sector === 'contractor') {
+                document.getElementById('factoring_covenant').innerText = factoringScore >= 70 ? 
+                    `CHẤP THUẬN THẦU: Tài trợ khoản phải thu dựa trên Hồ sơ nghiệm thu giai đoạn đã ký của Chủ đầu tư lớn. LTV tối đa 70%.` : 
+                    `RỦI RO NGHIỆM THU: Tranh chấp khối lượng thi công có thể xảy ra. Đề xuất giữ lại dự phòng 30% giá trị hóa đơn.`;
+
+                document.getElementById('scf_covenant').innerText = scfScore >= 70 ?
+                    `CHẤP THUẬN CHUỖI THẦU: Tài trợ thanh toán trực tiếp hóa đơn mua cát, đá, xi măng từ các tổng đại lý cung cấp vật liệu.` :
+                    `HẠN CHẾ: Xếp hạng tín dụng chủ đầu tư thấp. Không áp dụng tài trợ chuỗi không truy đòi (Non-recourse SCF).`;
+
+                document.getElementById('trade_covenant').innerText = tradeScore >= 70 ?
+                    `CHẤP THUẬN L/C: Phát hành L/C nhập khẩu thiết bị cơ điện ME từ các hãng quốc tế lớn để bàn giao công trình.` :
+                    `HẠN CHẾ: Ít phát sinh giao dịch xuất nhập khẩu trực tiếp. Chủ yếu mua qua đại lý thương mại trung gian nội địa.`;
+
+                document.getElementById('guarantee_covenant').innerText = guaranteeScore >= 70 ?
+                    `CHẤP THUẬN BẢO LÃNH THẦU: Miễn thế chấp tài sản đối với Bảo lãnh dự thầu. Tỷ lệ phí ưu đãi 0.8%/năm.` :
+                    `HẠN CHẾ: CIC có nợ cần chú ý hoặc năng lực kinh nghiệm hồ sơ thầu chưa đạt nhóm năng lực loại I.`;
+
+                document.getElementById('leasing_covenant').innerText = leasingScore >= 70 ?
+                    `CHẤP THUẬN CHO THUÊ: Tài trợ mua mới xe ben, máy đào, cẩu tháp. Thời gian tài trợ linh hoạt 60 tháng.` :
+                    `HẠN CHẾ: Doanh nghiệp ưu tiên thuê thiết bị bên thứ ba ngoài công trình để giữ nhẹ bảng cân đối kế toán.`;
+            } 
+            else if (sector === 'trading') {
+                document.getElementById('factoring_covenant').innerText = factoringScore >= 70 ? 
+                    `CHẤP THUẬN SỈ: Chiết khấu khoản phải thu đại lý chuỗi. Đẩy nhanh dòng tiền quay vòng tránh đọng vốn tồn kho.` : 
+                    `HẠN CHẾ: Tệp mua là các hộ kinh doanh cá thể nhỏ lẻ, khó kiểm soát chất lượng nợ phải thu trực tiếp.`;
+
+                document.getElementById('scf_covenant').innerText = scfScore >= 70 ?
+                    `CHẤP THUẬN SCF CHUỖI PHÂN PHỐI: Cấp hạn mức thấu chi/tài trợ vốn lưu động cho Đại lý thứ cấp dựa trên cam kết thu hộ dòng tiền.` :
+                    `HẠN CHẾ: Hệ thống phần mềm kế toán bán hàng chưa kết nối dữ liệu trực tiếp với hệ thống core ngân hàng đối tác.`;
+
+                document.getElementById('trade_covenant').innerText = tradeScore >= 70 ?
+                    `CHẤP THUẬN L/C TRƯỜNG: Tài trợ nhập khẩu hàng hóa nguyên container sẵn sàng tiêu thụ nội địa.` :
+                    `HẠN CHẾ: Lợi nhuận biên thương mại quá mỏng (< 3%), dễ rủi ro tỷ giá khi sử dụng nợ vay ngoại tệ ngắn hạn.`;
+
+                document.getElementById('guarantee_covenant').innerText = guaranteeScore >= 70 ?
+                    `CHẤP THUẬN BẢO LÃNH: BL thực hiện hợp đồng cung ứng thiết bị sỉ cho tổng kho công ty nhà nước.` :
+                    `HẠN CHẾ: Bản chất thương mại mua đứt bán đoạn không yêu cầu thủ tục bảo lãnh bảo hành kỹ thuật phức tạp.`;
+
+                document.getElementById('leasing_covenant').innerText = leasingScore >= 70 ?
+                    `CHẤP THUẬN LEASING: Tài trợ hệ thống xe tải vận tải hàng, xe nâng hạ tại kho bãi của doanh nghiệp sỉ.` :
+                    `HẠN CHẾ: Tài sản cố định chiếm tỷ trọng rất nhỏ trong tổng tài sản của mô hình thương mại sỉ phân phối.`;
+            }
+
+            // 5. General Credit Recommendation Engine
+            let recText = "";
+            if (cic === 'cic3') {
+                recText = "✖ TỪ CHỐI TÍN DỤNG CHẶT CHẼ: Doanh nghiệp đang tồn tại nợ nhóm 3-5 trên CIC. Toàn bộ các gói tài trợ tín dụng tín chấp bị bác bỏ ngay lập tức. Đề xuất duy nhất: Khách hàng chỉ có thể áp dụng mở L/C hoặc ký bảo lãnh dạng bảo đảm bằng tiền gửi ký quỹ 100%.";
+            } else {
+                let approvedSolutions = [];
+                if (factoringScore >= 75) approvedSolutions.push("Bao thanh toán nợ phải thu");
+                if (scfScore >= 75) approvedSolutions.push("Tài trợ chuỗi cung ứng (SCF)");
+                if (tradeScore >= 75) approvedSolutions.push("Tài trợ thương mại UPAS L/C");
+                if (guaranteeScore >= 75) approvedSolutions.push("Bảo lãnh dự thầu & thực hiện hợp đồng");
+                if (leasingScore >= 75) approvedSolutions.push("Cho thuê tài chính thiết bị");
+
+                if (approvedSolutions.length > 0) {
+                    recText = `Doanh nghiệp đạt mức độ rủi ro thuộc nhóm ${rating} (${score}/100 điểm). Khuyên nghị của Hội đồng Tín dụng: PHÊ DUYỆT cấu trúc giới hạn tín dụng chuỗi phi truyền thống không cần tài sản bảo đảm bất động sản thông qua các gói: ${approvedSolutions.join(', ')}. Quản lý chặt dòng tiền qua tài khoản escrow chỉ định.`;
+                } else {
+                    recText = `Xếp hạng tín dụng doanh nghiệp ở mức trung bình yếu (Nhóm ${rating}). Các giải pháp tài trợ chuỗi bị hạn chế do đòn bẩy cao hoặc báo cáo tài chính chưa qua kiểm toán độc lập. Đề xuất: Khách hàng cần bổ sung tài sản thế chấp truyền thống hoặc bên thứ ba bảo lãnh thanh toán để được duyệt hạn mức thí điểm tối đa 10 tỷ đồng.`;
+                }
+            }
+            document.getElementById('diagnostic_recommendation').innerText = recText;
+
+            updateSuitabilityChart(factoringScore, scfScore, tradeScore, guaranteeScore, leasingScore);
+        }
+
+        function updateProgress(prefix, score) {
+            document.getElementById(`${prefix}_score`).innerText = `${score}%`;
+            const progress = document.getElementById(`${prefix}_progress`);
+            progress.style.width = `${score}%`;
+
+            const statusBadge = document.getElementById(`${prefix}_status_badge`);
+            if (score >= 75) {
+                progress.className = "h-1.5 rounded-full animate-progress bg-emerald-500";
+                statusBadge.innerText = "Phê Duyệt";
+                statusBadge.className = "block text-[10px] px-1.5 py-0.5 rounded mt-0.5 font-black uppercase bg-emerald-950 text-emerald-400 border border-emerald-800/40 text-center";
+            } else if (score >= 50) {
+                progress.className = "h-1.5 rounded-full animate-progress bg-indigo-500";
+                statusBadge.innerText = "Xem Xét Thêm";
+                statusBadge.className = "block text-[10px] px-1.5 py-0.5 rounded mt-0.5 font-black uppercase bg-indigo-950 text-indigo-400 border border-indigo-800/40 text-center";
+            } else {
+                progress.className = "h-1.5 rounded-full animate-progress bg-slate-700";
+                statusBadge.innerText = "Hạn Chế/Từ Chối";
+                statusBadge.className = "block text-[10px] px-1.5 py-0.5 rounded mt-0.5 font-black uppercase bg-slate-800 text-slate-400 border border-slate-700/40 text-center";
+            }
+        }
+
+        function updateSuitabilityChart(factoring, scf, trade, guarantee, leasing) {
+            const ctx = document.getElementById('suitabilityChart').getContext('2d');
+            if (suitabilityChartObj) {
+                suitabilityChartObj.data.datasets[0].data = [factoring, scf, trade, guarantee, leasing];
+                suitabilityChartObj.update();
+            } else {
+                suitabilityChartObj = new Chart(ctx, {
+                    type: 'radar',
+                    data: {
+                        labels: [
+                            'Bao thanh toán (Factoring)',
+                            'Tài trợ Chuỗi (SCF)',
+                            'Tài trợ L/C UPAS',
+                            'Bảo lãnh Hợp đồng',
+                            'Cho thuê Tài chính'
+                        ],
+                        datasets: [{
+                            label: 'Tỷ lệ thích ứng giải pháp (%)',
+                            data: [factoring, scf, trade, guarantee, leasing],
+                            backgroundColor: 'rgba(99, 102, 241, 0.2)',
+                            borderColor: 'rgb(99, 102, 241)',
+                            pointBackgroundColor: 'rgb(129, 140, 248)',
+                            pointBorderColor: '#fff',
+                            pointHoverBackgroundColor: '#fff',
+                            pointHoverBorderColor: 'rgb(99, 102, 241)',
+                            borderWidth: 2
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        scales: {
+                            r: {
+                                angleLines: {
+                                    color: 'rgba(255, 255, 255, 0.1)'
+                                },
+                                grid: {
+                                    color: 'rgba(255, 255, 255, 0.1)'
+                                },
+                                pointLabels: {
+                                    color: '#94a3b8',
+                                    font: {
+                                        size: 10,
+                                        weight: '600'
+                                    }
+                                },
+                                ticks: {
+                                    backdropColor: 'transparent',
+                                    color: '#64748b',
+                                    font: {
+                                        size: 8
+                                    }
+                                },
+                                suggestedMin: 0,
+                                suggestedMax: 100
+                            }
+                        },
+                        plugins: {
+                            legend: {
+                                display: false
+                            }
+                        }
+                    }
+                });
+            }
+        }
+
+        function exportComprehensiveExcel() {
+            const sector = document.getElementById('corp_sector').value;
+            const opYears = parseInt(document.getElementById('op_years').value);
+            const cic = document.getElementById('cic_status').value;
+            const audit = document.getElementById('financial_audit').value;
+
+            const rev = getFloatVal('fin_revenue');
+            const gp = getFloatVal('fin_gross_profit');
+            const profit = getFloatVal('fin_profit');
+            const depreciation = getFloatVal('fin_depreciation');
+            const ar = getFloatVal('fin_ar');
+            const inventory = getFloatVal('fin_inventory');
+            const ap = getFloatVal('fin_ap');
+            const currentAssets = getFloatVal('fin_current_assets');
+            const currentLiabilities = getFloatVal('fin_current_liabilities');
+            const totalDebt = getFloatVal('fin_total_debt');
+            const equity = getFloatVal('fin_equity');
+
+            const hasBigBuyers = document.getElementById('spec_big_buyers').checked;
+            const hasExport = document.getElementById('spec_export').checked;
+            const hasMachineryNeeded = document.getElementById('spec_machinery').checked;
+            const isBiddingContractor = document.getElementById('spec_bidding').checked;
+            const hasImportNeeded = document.getElementById('spec_import').checked;
+
+            const currentRatio = currentLiabilities === 0 ? 0 : (currentAssets / currentLiabilities);
+            const debtToEquity = equity === 0 ? 0 : (totalDebt / equity);
+            const interestExpense = totalDebt * 0.08;
+            const ebitda = profit + depreciation + interestExpense;
+            const ebitdaMargin = rev === 0 ? 0 : (ebitda / rev);
+
+            const costOfGoodsSold = rev - gp;
+            const dso = rev === 0 ? 0 : (ar / rev) * 360;
+            const dio = costOfGoodsSold === 0 ? 0 : (inventory / costOfGoodsSold) * 360;
+            const dpo = costOfGoodsSold === 0 ? 0 : (ap / costOfGoodsSold) * 360;
+            const ccc = dso + dio - dpo;
+
+            // Chạy lại log số điểm mô phỏng
+            let factoringScore = 20, scfScore = 20, tradeScore = 20, guaranteeScore = 10, leasingScore = 15;
+            if (sector === 'manufacturing') {
+                factoringScore += (hasBigBuyers ? 40 : 15) + (dso > 45 ? 20 : 10) + (currentRatio > 1.2 ? 10 : 0);
+                scfScore += (hasBigBuyers ? 35 : 10) + (dpo > 30 ? 15 : 5);
+                tradeScore += (hasImportNeeded ? 35 : 10) + (hasExport ? 25 : 5) + (audit !== 'unaudited_tax' ? 10 : 0);
+                guaranteeScore += (isBiddingContractor ? 40 : 10);
+                leasingScore += (hasMachineryNeeded ? 45 : 10) + (opYears >= 4 ? 15 : 5);
+            } else if (sector === 'contractor') {
+                factoringScore += (hasBigBuyers ? 30 : 10) + (dso > 60 ? 30 : 10);
+                scfScore += (hasBigBuyers ? 20 : 5);
+                tradeScore += (hasImportNeeded ? 15 : 0) + (hasExport ? 10 : 0);
+                guaranteeScore += (isBiddingContractor ? 60 : 20) + (opYears >= 4 ? 15 : 5);
+                leasingScore += (hasMachineryNeeded ? 40 : 15) + (debtToEquity > 1.5 ? 15 : 5);
+            } else if (sector === 'trading') {
+                factoringScore += (hasBigBuyers ? 35 : 15) + (dso > 30 ? 25 : 10);
+                scfScore += (hasBigBuyers ? 50 : 20) + (currentRatio > 1.1 ? 15 : 0);
+                tradeScore += (hasImportNeeded ? 30 : 5) + (hasExport ? 15 : 0);
+                guaranteeScore += (isBiddingContractor ? 20 : 0);
+                leasingScore += (hasMachineryNeeded ? 20 : 5);
+            }
+
+            if (cic === 'cic3') {
+                factoringScore = 5; scfScore = 0; tradeScore = 0; guaranteeScore = 0; leasingScore = 5;
+            } else if (cic === 'cic2') {
+                factoringScore = Math.round(factoringScore * 0.6);
+                scfScore = Math.round(scfScore * 0.5);
+                tradeScore = Math.round(tradeScore * 0.5);
+                guaranteeScore = Math.round(guaranteeScore * 0.6);
+                leasingScore = Math.round(leasingScore * 0.7);
+            }
+
+            factoringScore = Math.min(100, Math.max(0, factoringScore));
+            scfScore = Math.min(100, Math.max(0, scfScore));
+            tradeScore = Math.min(100, Math.max(0, tradeScore));
+            guaranteeScore = Math.min(100, Math.max(0, guaranteeScore));
+            leasingScore = Math.min(100, Math.max(0, leasingScore));
+
+            const excelData = [
+                ["TỜ TRÌNH THẨM ĐỊNH TÍN DỤNG CẤU TRÚC & TÀI TRỢ CHUỖI DOANH NGHIỆP"],
+                ["HTLAND FINANCE ENGINE - BÁO CÁO NGÀY: " + new Date().toLocaleDateString('vi-VN')],
+                [""],
+                ["PHẦN A: THÔNG TIN PHÁP NHÂN"],
+                ["Chỉ tiêu đánh giá", "Giá trị thực tế", "Phân loại thẩm định", "Thuyết minh tín dụng chuyên môn"],
+                ["Mô hình kinh doanh", document.getElementById('corp_sector').options[document.getElementById('corp_sector').selectedIndex].text, "Ngành hoạt động", "Cơ sở xác định trọng số rủi ro cấu trúc tài trợ"],
+                ["Thời gian hoạt động thực tế", opYears + " năm", opYears >= 3 ? "Lớn hơn 3 năm" : "Dưới 3 năm", "Độ trưởng thành và uy tín thương mại trong ngành"],
+                ["Lịch sử tín dụng CIC", cic === 'cic1' ? "Nhóm 1 (Tốt)" : cic === 'cic2' ? "Nhóm 2 (Cần lưu ý)" : "Nhóm 3-5 (Nợ xấu)", "Chỉ số đỏ kiểm soát", "Yếu tố phủ quyết (veto) quá trình phê duyệt"],
+                ["Kiểm toán báo cáo tài chính", audit === 'audited_big4' ? "Big 4" : audit === 'audited_local' ? "Kiểm toán nội địa" : "Chưa kiểm toán", "Mức độ tin cậy số liệu", "Xác định tỷ lệ tín chấp không tài sản bảo đảm"],
+                [""],
+                ["PHẦN B: CHỈ SỐ TÀI CHÍNH & VÒNG QUAY"],
+                ["Chỉ tiêu tài chính", "Giá trị", "Đơn vị tính", "Đánh giá của Phòng Quản trị Rủi ro Tín dụng"],
+                ["Tổng doanh thu hoạt động", rev, "VND", "Năng lực hấp thụ hạn mức tín dụng lưu động"],
+                ["Hệ số thanh toán hiện hành (CR)", currentRatio.toFixed(2), "Lần", currentRatio >= 1.5 ? "Khá - Thanh khoản dòng tiền ngắn hạn tốt" : "Trung bình yếu - Cần quản lý hóa đơn đầu ra sát sao"],
+                ["Hệ số đòn bẩy tài chính (D/E)", debtToEquity.toFixed(2), "Lần", debtToEquity <= 1.2 ? "An toàn - Dư địa đòn bẩy còn nhiều" : "Đòn bẩy cao - Ưu tiên thuê tài chính ngoại bảng"],
+                ["Lợi nhuận EBITDA hoạt động", ebitda, "VND", "Năng lực tạo tiền ròng thực tế từ kinh doanh cốt lõi"],
+                ["Biên lợi nhuận EBITDA", (ebitdaMargin * 100).toFixed(2) + "%", "%", "Biên hoạt động thực tế sau khi điều chỉnh lãi vay phát sinh"],
+                ["Chu kỳ chuyển hóa tiền mặt (CCC)", ccc.toFixed(1), "Ngày", "Số ngày đọng vốn lưu động thực tế"],
+                [""],
+                ["PHẦN C: KẾT LUẬN & QUYẾT ĐỊNH CỦA BAN THẨM ĐỊNH (CREDIT DECISION)"],
+                ["STT", "Giải pháp cấu trúc", "Điểm tương thích", "Phê duyệt thương mại", "Covenants & Điều kiện kiểm soát bảo toàn tài sản"],
+                ["1", "Bao thanh toán nợ phải thu (Factoring)", factoringScore + "%", factoringScore >= 75 ? "PHÊ DUYỆT" : factoringScore >= 50 ? "PHÊ DUYỆT CÓ ĐIỀU KIỆN" : "TỪ CHỐI", document.getElementById('factoring_covenant').innerText],
+                ["2", "Tài trợ chuỗi đầu ra (SCF Distributor)", scfScore + "%", scfScore >= 75 ? "PHÊ DUYỆT" : scfScore >= 50 ? "PHÊ DUYỆT CÓ ĐIỀU KIỆN" : "TỪ CHỐI", document.getElementById('scf_covenant').innerText],
+                ["3", "Tài trợ nhập khẩu thương mại L/C UPAS", tradeScore + "%", tradeScore >= 75 ? "PHÊ DUYỆT" : tradeScore >= 50 ? "PHÊ DUYỆT CÓ ĐIỀU KIỆN" : "TỪ CHỐI", document.getElementById('trade_covenant').innerText],
+                ["4", "Bảo lãnh Phi truyền thống (Bảo lãnh thầu)", guaranteeScore + "%", guaranteeScore >= 75 ? "PHÊ DUYỆT" : guaranteeScore >= 50 ? "PHÊ DUYỆT CÓ ĐIỀU KIỆN" : "TỪ CHỐI", document.getElementById('guarantee_covenant').innerText],
+                ["5", "Cho thuê tài chính thiết bị (Leasing)", leasingScore + "%", leasingScore >= 75 ? "PHÊ DUYỆT" : leasingScore >= 50 ? "PHÊ DUYỆT CÓ ĐIỀU KIỆN" : "TỪ CHỐI", document.getElementById('leasing_covenant').innerText]
+            ];
+
+            const wb = XLSX.utils.book_new();
+            const ws = XLSX.utils.aoa_to_sheet(excelData);
+
+            ws['!cols'] = [
+                {wch: 35}, // Chỉ tiêu
+                {wch: 28}, // Giá trị
+                {wch: 22}, // Phân loại
+                {wch: 80}  // Diễn giải / Thuyết minh chuyên môn ngân hàng
+            ];
+
+            XLSX.utils.book_append_sheet(wb, ws, "Tờ trình Thẩm định Tín dụng");
+            XLSX.writeFile(wb, "HTLAND_To_Trinh_Tham_Dinh_Tin_Dung_Chuoi.xlsx");
+            showToast("Đã xuất tờ trình thẩm định cấu trúc thành công!");
+        }
+
+        window.onload = function() {
+            runEvaluation();
+        }
+
+    
+    
+    const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxicflcklcLKUYgvr3xKZt-G9cPtuLvxMxotF6Hw8CdNx9Yh2g8Xf5hZhxP6DJ3a98Tsw/exec";
+
+    function openRegisterModal() {
+        const modal = document.getElementById("registerModal");
+        modal.classList.remove("hidden");
+        modal.classList.add("flex");
+    }
+
+    function closeRegisterModal() {
+        const modal = document.getElementById("registerModal");
+        modal.classList.add("hidden");
+        modal.classList.remove("flex");
+    }
+
+    document.getElementById("registerForm").addEventListener("submit", async function(e) {
+        e.preventDefault();
+
+        const formData = new FormData();
+
+        formData.append("fullName", document.getElementById("fullName").value);
+        formData.append("phone", document.getElementById("phone").value);
+        formData.append("email", document.getElementById("email").value);
+        formData.append("businessType", document.getElementById("businessType").value);
+        formData.append("enterpriseRegistrationNumber", document.getElementById("enterpriseRegistrationNumber").value);
+        formData.append("supportStaffCode", document.getElementById("supportStaffCode").value);
+
+        try {
+
+            await fetch(SCRIPT_URL, {
+                method: "POST",
+                mode: "no-cors",
+                body: formData
+            });
+
+            alert("Đăng ký đã được gửi.");
+
+            this.reset();
+
+            closeRegisterModal();
+
+        } catch (err) {
+
+            console.error(err);
+
+            alert("Không thể gửi dữ liệu.");
+
+        }
+    });
+    </script>
 </body>
 </html>

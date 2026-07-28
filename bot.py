@@ -15,6 +15,7 @@ import time
 import pickle
 import os
 import re
+import json
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__)) # Thư mục /app
 
@@ -179,6 +180,147 @@ class FacebookBot:
         if not success:
             print("🔐 Falling back to manual login...")
             self.login_and_save_cookies()
+
+    def extract_user_id(self, link):
+        if not link:
+            return None
+
+        # Remove query params first so we parse a stable URL shape
+        link = link.split("?")[0]
+
+        # Case 1: /user/123
+        if "/user/" in link:
+            return link.split("/user/")[1].strip("/")
+
+        # Case 2: profile.php?id=123
+        if "profile.php" in link:
+            match = re.search(r"id=(\d+)", link)
+            if match:
+                return match.group(1)
+
+        # Case 3: direct numeric path /123456789/
+        match = re.search(r"facebook\.com/(\d+)", link)
+        if match:
+            return match.group(1)
+
+        # Case 4: username fallback
+        username = link.replace("https://www.facebook.com/", "").strip("/")
+        return username if username else None
+
+    def collect_members(self, max_scroll=9999, scroll_pause=1.5, stop_after_no_change=5):
+        driver = self.driver
+        collected = {}
+        seen_links = set()
+
+        js_extract_members = """
+            return Array.from(document.querySelectorAll('div[role="listitem"]')).map(item => {
+                const linkElem = item.querySelector('a[role="link"][aria-label]');
+                if (!linkElem) return null;
+
+                const name = linkElem.getAttribute('aria-label') || '';
+                const href = linkElem.getAttribute('href') || '';
+
+                const imgElem = item.querySelector('image, img');
+                let avatar = '';
+                if (imgElem) {
+                    avatar = imgElem.getAttribute('xlink:href') || imgElem.getAttribute('src') || '';
+                }
+
+                const textLines = item.innerText ? item.innerText.split('\\n').map(t => t.trim()).filter(Boolean) : [];
+
+                return {
+                    name: name,
+                    link: href,
+                    avatar: avatar,
+                    details: textLines
+                };
+            }).filter(item => item !== null);
+        """
+
+        last_height = driver.execute_script("return document.body.scrollHeight")
+        no_change_count = 0
+
+        for i in range(max_scroll):
+            print(f"🔄 Scroll {i + 1}")
+            raw_members = driver.execute_script(js_extract_members)
+
+            if not raw_members and i == 0:
+                print("⚠️ No elements found at all")
+                break
+
+            for item in raw_members:
+                link = item.get("link")
+
+                if not link or link in seen_links:
+                    continue
+
+                if any(x in link for x in ["photo", "story", "reel", "watch"]):
+                    continue
+
+                seen_links.add(link)
+
+                user_id = self.extract_user_id(link)
+                if user_id:
+                    item["user_id"] = user_id
+                    collected[user_id] = item
+
+            driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+            time.sleep(scroll_pause)
+
+            new_height = driver.execute_script("return document.body.scrollHeight")
+            if new_height == last_height:
+                no_change_count += 1
+                if no_change_count >= stop_after_no_change:
+                    print("✅ Đã đến cuối danh sách, dừng thuật toán.")
+                    break
+            else:
+                no_change_count = 0
+                last_height = new_height
+
+        result_list = list(collected.values())
+        print(f"🎯 Hoàn thành! Thu thập được: {len(result_list)} thành viên.")
+        return result_list
+
+    def perform_search(
+        self,
+        group_url=None,
+        group_id=None,
+        output_path="users.json",
+        max_scroll=9999,
+        members_tab_timeout=10,
+        page_wait=2,
+        after_click_wait=3,
+        scroll_pause=1.5,
+    ):
+        driver = self.driver
+
+        if group_url:
+            target_url = group_url
+        elif group_id:
+            target_url = f"https://www.facebook.com/groups/{group_id}"
+        else:
+            raise ValueError("perform_search requires either group_url or group_id")
+
+        driver.get(target_url)
+        time.sleep(page_wait)
+
+        members_tab = WebDriverWait(driver, members_tab_timeout).until(
+            EC.element_to_be_clickable((
+                By.XPATH,
+                "//a[contains(@href, 'members')]"
+            ))
+        )
+
+        members_tab.click()
+        time.sleep(after_click_wait)
+
+        users = self.collect_members(max_scroll=max_scroll, scroll_pause=scroll_pause)
+
+        with open(output_path, "w", encoding="utf-8") as f:
+            json.dump(users, f, ensure_ascii=False, indent=4)
+
+        print(f"✅ Saved {len(users)} users to {output_path}")
+        return users
 
     def close(self):
         self.driver.quit()
