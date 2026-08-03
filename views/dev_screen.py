@@ -253,7 +253,7 @@ class DevelopScreen(tk.Frame):
 
 
             # 2. Khởi tạo Bot và Đăng nhập
-            self.current_bot = bot.FacebookBot()
+            self.current_bot = bot.FacebookBot(self.controller.is_demo_mode)
             self.after(0, lambda: self.lbl_status.config(text="Trạng thái: Đang đăng nhập...", foreground="orange"))
             self.current_bot.login_with_cookies(user, self.controller.cookies)
 

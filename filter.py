@@ -1,5 +1,60 @@
 import json
 import os
+import pandas as pd
+
+def convert_json_file_to_spreadsheet(json_filepath, output_file="facebook_users.xlsx", join_details=True):
+    """
+    Đọc file .json từ ổ đĩa và chuyển đổi sang file Excel (.xlsx) hoặc CSV (.csv).
+    
+    :param json_filepath: Đường dẫn tới file .json (Ví dụ: "data.json" hoặc "D:/data/users.json")
+    :param output_file: Tên file đầu ra (.xlsx hoặc .csv)
+    :param join_details: True để gộp mảng details thành 1 cột, False để tách thành nhiều cột
+    """
+    # 1. Kiểm tra file .json có tồn tại không
+    if not os.path.exists(json_filepath):
+        print(f"Lỗi: Không tìm thấy file '{json_filepath}'")
+        return
+
+    # 2. Đọc file .json với bảng mã utf-8 (để tránh lỗi font chữ/tiếng Việt)
+    with open(json_filepath, 'r', encoding='utf-8') as f:
+        data = json.load(f)
+
+    processed_rows = []
+
+    # 3. Xử lý từng đối tượng trong danh sách
+    for item in data:
+        row = {
+            "user_id": f"'{str(item.get('user_id', ''))}",  # Thêm ' để Excel giữ kiểu Text
+            "name": item.get("name", ""),
+            "link": item.get("link", ""),
+            "avatar": item.get("avatar", "")
+        }
+        
+        details = item.get("details", [])
+        
+        if join_details:
+            # Gộp các chi tiết bằng dấu phân cách |
+            row["details"] = " | ".join(details)
+        else:
+            # Tách chi tiết ra thành các cột detail_1, detail_2,...
+            for idx, detail in enumerate(details, start=1):
+                row[f"detail_{idx}"] = detail
+
+        processed_rows.append(row)
+
+    # 4. Xuất ra DataFrame và lưu file
+    df = pd.DataFrame(processed_rows)
+
+    if output_file.endswith(".csv"):
+        df.to_csv(output_file, index=False, encoding="utf-8-sig")
+    elif output_file.endswith(".xlsx"):
+        df.to_excel(output_file, index=False)
+    else:
+        raise ValueError("Định dạng file không hỗ trợ. Vui lòng chọn .xlsx hoặc .csv")
+
+    print(f"Đã chuyển đổi thành công từ '{json_filepath}' sang '{output_file}'!")
+
+    
 
 def filter_members(input_file="users.json"):
     """
@@ -85,4 +140,22 @@ def filter_members(input_file="users.json"):
 # CÁCH SỬ DỤNG HÀM
 # ==========================================
 if __name__ == "__main__":
-    filter_members("users.json")
+    #filter_members("users_group_KillingFloorClanESP.json")
+
+
+    # Thay 'du_lieu.json' bằng đường dẫn file .json thực tế trên máy của bạn
+    file_json_dau_vao = "users_group_KillingFloorClanESP.json" 
+
+    # 1. Đọc file JSON và xuất ra file Excel
+    convert_json_file_to_spreadsheet(
+        json_filepath=file_json_dau_vao, 
+        output_file="ket_qua.xlsx", 
+        join_details=True
+    )
+
+    # 2. Đọc file JSON và xuất ra file CSV (Tách details thành các cột riêng)
+    convert_json_file_to_spreadsheet(
+        json_filepath=file_json_dau_vao, 
+        output_file="ket_qua.csv", 
+        join_details=False
+    )

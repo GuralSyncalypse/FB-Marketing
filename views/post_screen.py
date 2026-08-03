@@ -163,7 +163,7 @@ class PostScreen(tk.Frame):
                 foreground="orange"
             ))
 
-            driver = bot.FacebookBot()
+            driver = bot.FacebookBot(self.controller.is_demo_mode)
             driver.user_agent = self.controller.user_agent
 
             if not driver.login_with_cookies(uid, self.controller.cookies):

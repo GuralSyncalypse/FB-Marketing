@@ -10,6 +10,7 @@ class UidScanScreen(tk.Frame):
         self.controller = controller
 
         self.scan_results = []
+        self.stop_event = threading.Event()  # Cờ tín hiệu dừng thread
         self._build_ui()
 
     def _build_ui(self):
@@ -36,7 +37,7 @@ class UidScanScreen(tk.Frame):
             btn_row,
             text="Tải lại groups",
             command=self.refresh_groups_preview,
-        ).pack(side="left", fill="x", expand=True, padx=(0, 4))
+        ).pack(side="left", fill="x", expand=True, padx=(0, 2))
 
         # Nút Bắt đầu quét UID
         self.btn_start = ttk.Button(
@@ -44,7 +45,16 @@ class UidScanScreen(tk.Frame):
             text="Bắt đầu quét",
             command=self.start_uid_scan,
         )
-        self.btn_start.pack(side="left", fill="x", expand=True, padx=(4, 0))
+        self.btn_start.pack(side="left", fill="x", expand=True, padx=2)
+
+        # Nút Dừng quét UID (Thêm mới)
+        self.btn_stop = ttk.Button(
+            btn_row,
+            text="Dừng quét",
+            command=self.stop_uid_scan,
+            state=tk.DISABLED
+        )
+        self.btn_stop.pack(side="left", fill="x", expand=True, padx=(2, 0))
 
         option_box = ttk.LabelFrame(left_frame, text=" Tùy chọn ", padding=8)
         option_box.pack(fill="x", pady=(0, 10))
@@ -59,7 +69,8 @@ class UidScanScreen(tk.Frame):
         self.lbl_status = ttk.Label(left_frame, text="Trạng thái: Sẵn sàng", foreground="blue")
         self.lbl_status.pack(anchor="w", pady=(4, 0))
 
-        right_frame = ttk.LabelFrame(self.parent, text=" Danh sách UID quét được ", padding=10)
+        # BẢNG THỐNG KÊ KẾT QUẢ QUÉT (CHỈ HIỂN THỊ TỔNG QUAN GROUP)
+        right_frame = ttk.LabelFrame(self.parent, text=" Tiến trình quét theo Group ", padding=10)
         right_frame.pack(side="right", fill="both", expand=True, padx=10, pady=10)
 
         tree_frame = ttk.Frame(right_frame)
@@ -67,17 +78,19 @@ class UidScanScreen(tk.Frame):
 
         self.tree_results = ttk.Treeview(
             tree_frame,
-            columns=("uid", "group_name", "status"),
+            columns=("group_name", "group_id", "count", "status"),
             show="headings",
             height=14,
         )
-        self.tree_results.heading("uid", text="UID")
-        self.tree_results.heading("group_name", text="Group")
+        self.tree_results.heading("group_name", text="Tên Group")
+        self.tree_results.heading("group_id", text="ID Group")
+        self.tree_results.heading("count", text="Số UID thu thập")
         self.tree_results.heading("status", text="Trạng thái")
 
-        self.tree_results.column("uid", width=180, anchor="w")
-        self.tree_results.column("group_name", width=220, anchor="w")
-        self.tree_results.column("status", width=110, anchor="center")
+        self.tree_results.column("group_name", width=200, anchor="w")
+        self.tree_results.column("group_id", width=130, anchor="w")
+        self.tree_results.column("count", width=110, anchor="e")
+        self.tree_results.column("status", width=90, anchor="center")
 
         scrollbar = ttk.Scrollbar(tree_frame, orient="vertical", command=self.tree_results.yview)
         self.tree_results.configure(yscrollcommand=scrollbar.set)
@@ -116,9 +129,16 @@ class UidScanScreen(tk.Frame):
     def set_status(self, text, color="blue"):
         self.lbl_status.config(text=f"Trạng thái: {text}", foreground=color)
 
-    def add_result(self, uid, group_name="", status="OK"):
-        self.scan_results.append({"uid": uid, "group_name": group_name, "status": status})
-        self.tree_results.insert("", "end", values=(uid, group_name, status))
+    def add_group_result(self, group_name, group_id, count, status="OK"):
+        """Thêm 1 dòng tổng kết của Group vào bảng (Không lặp từng UID)"""
+        count_display = f"{count:,}" if isinstance(count, int) else "0"
+        self.scan_results.append({
+            "group_name": group_name, 
+            "group_id": group_id, 
+            "count": count, 
+            "status": status
+        })
+        self.tree_results.insert("", "end", values=(group_name, group_id, count_display, status))
 
     def clear_results(self):
         self.scan_results.clear()
@@ -126,8 +146,14 @@ class UidScanScreen(tk.Frame):
             self.tree_results.delete(item)
         self.set_status("Đã xóa danh sách kết quả", color="gray")
 
+    def stop_uid_scan(self):
+        """Hàm xử lý khi người dùng ấn nút Dừng"""
+        self.stop_event.set()
+        self.set_status("Đang dọn dẹp và dừng tiến trình...", color="red")
+        self.btn_stop.config(state=tk.DISABLED)
+
     # =========================================================================
-    # LOGIC CHẠY TỰ ĐỘNG VỚI SELENIUM THREADING (THAM KHẢO TỪ SMS_SCREEN)
+    # LOGIC CHẠY TỰ ĐỘNG VỚI SELENIUM THREADING
     # =========================================================================
 
     def start_uid_scan(self):
@@ -149,11 +175,14 @@ class UidScanScreen(tk.Frame):
             )
             return
 
-        # 3. Vô hiệu hóa nút bấm & đổi trạng thái
+        # Reset cờ dừng
+        self.stop_event.clear()
+
+        # 3. Vô hiệu hóa nút Bắt đầu & Kích hoạt nút Dừng
         self.btn_start.config(state=tk.DISABLED, text="Đang quét...")
+        self.btn_stop.config(state=tk.NORMAL)
         self.set_status(f"Đang khởi tạo trình duyệt cho {len(source_groups)} groups...", color="orange")
 
-        print(source_groups)
         # 4. Tạo thread chạy Selenium ngầm (daemon=True)
         scan_thread = threading.Thread(
             target=self.run_selenium_scan_process,
@@ -170,8 +199,11 @@ class UidScanScreen(tk.Frame):
 
         try:
             # Khởi tạo FacebookBot từ bot.py
-            obj = bot.FacebookBot()
+            obj = bot.FacebookBot(self.controller.is_demo_mode)
             obj.user_agent = getattr(self.controller, "user_agent", None)
+
+            if self.stop_event.is_set():
+                return
 
             # Đăng nhập bằng Cookies
             is_login = obj.login_with_cookies(user, getattr(self.controller, "cookies", []))
@@ -179,49 +211,67 @@ class UidScanScreen(tk.Frame):
                 self.after(0, lambda: messagebox.showerror("Lỗi", "Đăng nhập Cookies thất bại!"))
                 return
 
-            # Lặp qua từng Group để perform_scan / perform_search
+            # Lặp qua từng Group
             for idx, group in enumerate(target_groups, start=1):
+                # Kiểm tra nếu bấm Dừng giữa chừng
+                if self.stop_event.is_set():
+                    print("🛑 Tiến trình đã bị người dùng dừng.")
+                    break
+
                 group_id = group.get("id")
                 group_name = group.get("name", group_id)
 
-                # Cập nhật trạng thái hiển thị
+                # Cập nhật trạng thái hiển thị thanh Statusbar
                 self.after(0, lambda g_name=group_name, i=idx, total=len(target_groups): 
                     self.set_status(f"[{i}/{total}] Đang quét nhóm: {g_name}...", color="orange")
                 )
 
                 try:
-                    # Gọi trực tiếp hàm perform_search từ bot.py
+                    # Chạy hàm perform_search quét dữ liệu
                     members = obj.perform_search(
                         group_id=group_id,
                         output_path=f"users_group_{group_id}.json",
                         scroll_pause=1.5
                     )
 
-                    # Đưa danh sách UID thu thập được lên Treeview giao diện
-                    for member in members:
-                        u_id = member.get("user_id")
-                        if u_id:
-                            total_found += 1
-                            # Gọi add_result trên thread chính
-                            self.after(0, self.add_result, u_id, group_name, "OK")
+                    # Đếm số UID lấy được
+                    group_count = len(members) if members else 0
+                    total_found += group_count
+
+                    # ⚡ ĐƯA TỔNG SỐ UID CỦA GROUP LÊN TREEVIEW (1 DÒNG DUY NHẤT)
+                    self.after(0, self.add_group_result, group_name, group_id, group_count, "OK")
 
                 except Exception as group_err:
                     print(f"❌ Lỗi khi quét group {group_id}: {group_err}")
-                    self.after(0, self.add_result, "N/A", group_name, "Lỗi Quét")
+                    self.after(0, self.add_group_result, group_name, group_id, 0, "Lỗi Quét")
 
-            # Thông báo hoàn tất thành công
-            self.after(0, lambda: messagebox.showinfo(
-                "Hoàn tất", 
-                f"Đã quét xong {len(target_groups)} groups!\nTổng cộng thu thập được {total_found} UIDs."
-            ))
+            # Thông báo hoàn tất / dừng
+            if self.stop_event.is_set():
+                self.after(0, lambda: messagebox.showwarning(
+                    "Đã dừng", 
+                    f"Đã dừng tiến trình quét!\nTổng cộng đã thu thập được {total_found:,} UIDs."
+                ))
+            else:
+                self.after(0, lambda: messagebox.showinfo(
+                    "Hoàn tất", 
+                    f"Đã quét xong {len(target_groups)} groups!\nTổng cộng thu thập được {total_found:,} UIDs."
+                ))
 
         except Exception as e:
             print(f"❌ Lỗi tiến trình quét UID: {e}")
             self.after(0, lambda err=str(e): messagebox.showerror("Lỗi Tiến Trình", f"Có lỗi xảy ra: {err}"))
 
         finally:
-            # Luôn đóng trình duyệt và bật lại nút Start trên giao diện
+            # Luôn dọn dẹp Selenium và bật lại các nút bấm
             if obj:
-                obj.close()
+                try:
+                    obj.close()
+                except Exception:
+                    pass
+
             self.after(0, lambda: self.btn_start.config(state=tk.NORMAL, text="Bắt đầu quét"))
-            self.after(0, lambda: self.set_status("Hoàn tất quét", color="green"))
+            self.after(0, lambda: self.btn_stop.config(state=tk.DISABLED))
+            
+            status_text = "Đã dừng quét" if self.stop_event.is_set() else "Hoàn tất quét"
+            status_color = "red" if self.stop_event.is_set() else "green"
+            self.after(0, lambda: self.set_status(status_text, color=status_color))

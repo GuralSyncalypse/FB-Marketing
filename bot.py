@@ -20,25 +20,44 @@ import json
 BASE_DIR = os.path.dirname(os.path.abspath(__file__)) # Thư mục /app
 
 class FacebookBot:
-    def __init__(self):
+    def __init__(self, visualize=False):
         self.driver = None
         self.user_agent = None
+
+        self.visualize = visualize
 
     def setup_driver(self):
         """Hàm phụ trách cấu hình và khởi tạo Chrome Driver"""
         chrome_options = Options()
-        # chrome_options.add_argument("--headless=new")  # Chạy ẩn trên background server
         chrome_options.add_argument("--no-sandbox")
         chrome_options.add_argument("--disable-dev-shm-usage")
-        chrome_options.add_argument("--window-size=1920,1080")
 
-        # Chỉ add user-agent nếu nó hợp lệ
+        # --- XỬ LÝ CHẾ ĐỘ VISUALIZE ---
+        if not self.visualize:
+            # 🚀 CHẾ ĐỘ 1: CHẠY NGẦM & TỐI ƯU HIỆU NĂNG (visualize = False)
+            chrome_options.add_argument("--headless=new")  # Chạy ẩn hoàn toàn
+            chrome_options.add_argument("--disable-gpu")
+            chrome_options.add_argument("--window-size=1920,1080")
+            chrome_options.add_argument("--disable-notifications") # Tắt thông báo đẩy
+            
+            # (Tùy chọn) Tắt tải ảnh để quét nhanh và tiết kiệm tài nguyên
+            # chrome_options.add_argument("--blink-settings=imagesEnabled=false")
+            
+            print("[Selenium] Đang chạy ở chế độ CHẠY ẨN (Tối ưu hiệu năng)...")
+        else:
+            # 👁️ CHẾ ĐỘ 2: CHẠY HIỂN THỊ CỬA SỔ (visualize = True)
+            chrome_options.add_argument("--start-maximized") # Bật to cửa sổ trình duyệt
+            print("[Selenium] Đang chạy ở chế độ HIỂN THỊ TRÌNH DUYỆT...")
+
+        # Cấu hình User-Agent
         if self.user_agent:
             chrome_options.add_argument(f"--user-agent={self.user_agent}")
         else:
-            # Hoặc định nghĩa một UA mặc định sạch sẽ
-            chrome_options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-        
+            chrome_options.add_argument(
+                "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            )
+
         self.driver = webdriver.Chrome(options=chrome_options)
 
     def save_cookies(self):
@@ -181,6 +200,8 @@ class FacebookBot:
             print("🔐 Falling back to manual login...")
             self.login_and_save_cookies()
 
+    # -------------------------
+    # Scan uid from group members
     def extract_user_id(self, link):
         if not link:
             return None
@@ -288,7 +309,7 @@ class FacebookBot:
         output_path="users.json",
         max_scroll=9999,
         members_tab_timeout=10,
-        page_wait=2,
+        page_wait=5,
         after_click_wait=3,
         scroll_pause=1.5,
     ):
@@ -321,6 +342,8 @@ class FacebookBot:
 
         print(f"✅ Saved {len(users)} users to {output_path}")
         return users
+
+    # -------------------------
 
     def close(self):
         self.driver.quit()
@@ -704,7 +727,6 @@ class FacebookBot:
         except Exception as e:
             print(e)
             return False
-
 
 
     def create_post(self, id, content="", img_paths=[]):

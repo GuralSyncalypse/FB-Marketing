@@ -136,7 +136,7 @@ class SmsScreen(tk.Frame):
         print(f"\n[Selenium Màn 2] Đang khởi chạy tiến trình ngầm cho UID: {user}...")
 
         try:
-            obj = bot.FacebookBot()
+            obj = bot.FacebookBot(self.controller.is_demo_mode)
             obj.user_agent = self.controller.user_agent
             obj.login_with_cookies(user, self.controller.cookies)
 
