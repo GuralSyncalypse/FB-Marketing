@@ -6,7 +6,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.action_chains import ActionChains
-from selenium.common.exceptions import TimeoutException, NoSuchElementException, ElementClickInterceptedException
+from selenium.common.exceptions import TimeoutException, NoSuchElementException, WebDriverException
 from openpyxl import Workbook
 from queue import Queue, Empty
 import threading
@@ -17,14 +17,60 @@ import os
 import re
 import json
 
+from filter import convert_json_file_to_spreadsheet
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__)) # Thư mục /app
 
 class FacebookBot:
-    def __init__(self, visualize=False):
+    def __init__(self, visualize=False, output_path="users.json", stop_event=None):
         self.driver = None
         self.user_agent = None
+        self.output_path = output_path
+        self.stop_event = stop_event
 
         self.visualize = visualize
+
+    def is_stopped(self):
+        """Hàm phụ trợ kiểm tra xem người dùng đã bấm nút Dừng hay chưa."""
+        return self.stop_event is not None and self.stop_event.is_set()
+
+    def _load_existing_data(self):
+        """Đọc file json cũ nếu có để tránh mất dữ liệu khi cào lại."""
+        if os.path.exists(self.output_path):
+            try:
+                with open(self.output_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    print(
+                        f"📂 Tìm thấy file cũ! Đã tải sẵn {len(data)} thành viên."
+                    )
+                    return {item["user_id"]: item for item in data if "user_id" in item}
+            except Exception as e:
+                print(f"⚠️ Lỗi đọc file cũ ({e}), sẽ tạo mới.")
+        return {}
+
+    def _save_checkpoint(self):
+        """Ghi dữ liệu hiện tại xuống đĩa (Autosave - Ghi đè file mới)."""
+        try:
+            temp_path = self.output_path + '.tmp'  # Tạo file tạm để ghi trước
+
+            # Lấy danh sách thành viên trực tiếp từ bộ nhớ đang cào
+            data = list(getattr(self, "collected", {}).values())
+
+            with open(temp_path, "w", encoding="utf-8") as f:
+                json.dump(
+                    data,
+                    f,
+                    ensure_ascii=False,
+                    indent=4,
+                )
+
+            # Đổi tên file an toàn (ghi đè file chính) tránh mất dữ liệu nếu bị ngắt điện
+            os.replace(temp_path, self.output_path)
+            print(
+                f"💾 [Autosave] Đã lưu an toàn {len(data)} thành viên vào đĩa ({self.output_path})."
+            )
+        except Exception as e:
+            print(f"⚠️ Không thể lưu checkpoint: {e}")
 
     def setup_driver(self):
         """Hàm phụ trách cấu hình và khởi tạo Chrome Driver"""
@@ -206,32 +252,41 @@ class FacebookBot:
         if not link:
             return None
 
-        # Remove query params first so we parse a stable URL shape
-        link = link.split("?")[0]
-
-        # Case 1: /user/123
-        if "/user/" in link:
-            return link.split("/user/")[1].strip("/")
-
-        # Case 2: profile.php?id=123
+        # Kiểm tra profile.php trước khi tách dấu ?
         if "profile.php" in link:
             match = re.search(r"id=(\d+)", link)
             if match:
                 return match.group(1)
 
-        # Case 3: direct numeric path /123456789/
-        match = re.search(r"facebook\.com/(\d+)", link)
+        clean_link = link.split("?")[0]
+
+        if "/user/" in clean_link:
+            return clean_link.split("/user/")[1].strip("/")
+
+        match = re.search(r"facebook\.com/(\d+)", clean_link)
         if match:
             return match.group(1)
 
-        # Case 4: username fallback
-        username = link.replace("https://www.facebook.com/", "").strip("/")
+        username = (
+            clean_link.replace("https://www.facebook.com/", "")
+            .replace("http://www.facebook.com/", "")
+            .strip("/")
+        )
         return username if username else None
 
-    def collect_members(self, max_scroll=9999, scroll_pause=1.5, stop_after_no_change=5):
+    def collect_members(
+        self,
+        max_scroll=9999,
+        base_scroll_pause=2.5,
+        max_retries_per_scroll=4,
+        stop_after_no_change=5,
+        autosave_every=20,
+    ):
         driver = self.driver
+
         collected = {}
         seen_links = set()
+        self.collected = collected
 
         js_extract_members = """
             return Array.from(document.querySelectorAll('div[role="listitem"]')).map(item => {
@@ -258,89 +313,169 @@ class FacebookBot:
             }).filter(item => item !== null);
         """
 
-        last_height = driver.execute_script("return document.body.scrollHeight")
         no_change_count = 0
+        last_saved_count = 0
 
+        # ==============================================================================
+        # VÒNG LẶP NGOÀI: for i in range(max_scroll)
+        # ==============================================================================
         for i in range(max_scroll):
-            print(f"🔄 Scroll {i + 1}")
-            raw_members = driver.execute_script(js_extract_members)
-
-            if not raw_members and i == 0:
-                print("⚠️ No elements found at all")
+            if self.is_stopped():
+                print("🛑 [User Action] Nhận lệnh dừng từ người dùng!")
                 break
 
-            for item in raw_members:
-                link = item.get("link")
+            print(f"🔄 Scroll {i + 1} | Tổng đã cào: {len(collected)}")
+            previous_total = len(collected)
+            new_data_found = False
 
-                if not link or link in seen_links:
-                    continue
+            # --------------------------------------------------------------------------
+            # VÒNG LẶP TRONG: Thử lấy dữ liệu nhiều lần nếu mạng chậm chưa load kịp
+            # --------------------------------------------------------------------------
+            for retry in range(max_retries_per_scroll):
+                if self.is_stopped():
+                    break
 
-                if any(x in link for x in ["photo", "story", "reel", "watch"]):
-                    continue
+                try:
+                    raw_members = driver.execute_script(js_extract_members)
+                    for item in raw_members:
+                        link = item.get("link")
 
-                seen_links.add(link)
+                        if not link or link in seen_links:
+                            continue
 
-                user_id = self.extract_user_id(link)
-                if user_id:
-                    item["user_id"] = user_id
-                    collected[user_id] = item
+                        if any(
+                            x in link
+                            for x in ["photo", "story", "reel", "watch"]
+                        ):
+                            continue
 
-            driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-            time.sleep(scroll_pause)
+                        seen_links.add(link)
+                        user_id = self.extract_user_id(link)
 
-            new_height = driver.execute_script("return document.body.scrollHeight")
-            if new_height == last_height:
+                        if user_id:
+                            item["user_id"] = user_id
+                            collected[user_id] = item
+
+                    # Đã lấy thêm được user mới -> Đánh dấu thành công và thoát vòng retry
+                    if len(collected) > previous_total:
+                        print(
+                            f"✅ Lấy được {len(collected) - previous_total} thành viên mới."
+                        )
+                        new_data_found = True
+                        break
+
+                except WebDriverException as e:
+                    print(f"🚨 Mạng đứt hoặc lỗi Selenium: {e.msg}")
+                    print("   ⏳ Chờ 10 giây để kết nối hồi phục...")
+
+                    if self.stop_event and self.stop_event.wait(timeout=10):
+                        break
+
+                # Nếu chưa có dữ liệu mới -> Chờ tăng dần + Cuộn nhích nhẹ để kích thích FB load
+                wait_time = base_scroll_pause * (retry + 1)
+                print(
+                    f"   ⏳ Mạng chưa tải dữ liệu mới, chờ {wait_time}s (Thử {retry + 1}/{max_retries_per_scroll})..."
+                )
+
+                if self.stop_event and self.stop_event.wait(timeout=wait_time):
+                    print("🛑 Hủy thời gian chờ do người dùng bấm Dừng.")
+                    break
+
+                # Kích thích Facebook lazy-load bằng cách cuộn nhích nhẹ
+                try:
+                    driver.execute_script("window.scrollBy(0, -300);")
+                    time.sleep(0.3)
+                    driver.execute_script(
+                        "window.scrollTo(0, document.body.scrollHeight);"
+                    )
+                except Exception:
+                    pass
+
+            # --------------------------------------------------------------------------
+            # SAU KHI KẾT THÚC RETRY -> KIỂM TRA DỪNG VÀ AUTOSAVE (CẤP VÒNG NGOÀI)
+            # --------------------------------------------------------------------------
+            if self.is_stopped():
+                break
+
+            # 1. Kiểm tra xem có dữ liệu mới sau toàn bộ lượt retry không
+            if not new_data_found:
                 no_change_count += 1
+                print(
+                    f"⚠️ Không có dữ liệu mới ({no_change_count}/{stop_after_no_change})"
+                )
                 if no_change_count >= stop_after_no_change:
-                    print("✅ Đã đến cuối danh sách, dừng thuật toán.")
+                    print(
+                        "✅ Đã đến cuối danh sách hoặc mạng ngừng tải hoàn toàn."
+                    )
                     break
             else:
-                no_change_count = 0
-                last_height = new_height
+                no_change_count = 0  # Reset đếm nếu thu thập được dữ liệu mới
 
-        result_list = list(collected.values())
-        print(f"🎯 Hoàn thành! Thu thập được: {len(result_list)} thành viên.")
-        return result_list
+            # 2. Tự động lưu checkpoint (luôn ghi đè dữ liệu mới nhất)
+            if len(collected) - last_saved_count >= autosave_every:
+                self.collected = collected
+                self._save_checkpoint()
+                last_saved_count = len(collected)
+
+            # 3. Cuộn xuống cuối trang chuẩn bị cho lần lặp (Scroll) tiếp theo
+            try:
+                driver.execute_script(
+                    "window.scrollTo(0, document.body.scrollHeight);"
+                )
+            except Exception:
+                pass
+
+        # Ghi đè checkpoint lần cuối khi hoàn thành / dừng hẳn
+        self.collected = collected
+        self._save_checkpoint()
+        print(
+            f"🏁 Đã lưu hoàn tất! Dữ liệu mới ({len(collected)} user) đã được bảo toàn."
+        )
+        return list(collected.values())
 
     def perform_search(
         self,
         group_url=None,
         group_id=None,
-        output_path="users.json",
         max_scroll=9999,
-        members_tab_timeout=10,
-        page_wait=5,
-        after_click_wait=3,
-        scroll_pause=1.5,
+        timeout=30,
+        base_scroll_pause=2.5,
     ):
-        driver = self.driver
-
         if group_url:
             target_url = group_url
         elif group_id:
             target_url = f"https://www.facebook.com/groups/{group_id}"
         else:
-            raise ValueError("perform_search requires either group_url or group_id")
+            raise ValueError("Cần cung cấp group_url hoặc group_id")
 
-        driver.get(target_url)
-        time.sleep(page_wait)
+        print(f"🌐 Đang truy cập: {target_url}")
 
-        members_tab = WebDriverWait(driver, members_tab_timeout).until(
-            EC.element_to_be_clickable((
-                By.XPATH,
-                "//a[contains(@href, 'members')]"
-            ))
+        try:
+            self.driver.get(target_url)
+
+            # Chờ chuyển tab Members
+            members_tab = WebDriverWait(self.driver, timeout).until(
+                EC.element_to_be_clickable(
+                    (By.XPATH, "//a[contains(@href, 'members')]")
+                )
+            )
+            members_tab.click()
+            print("👉 Đã nhấn vào tab Thành viên")
+        except Exception as e:
+            print(f"⚠️ Lưu ý chuyển trang: {e}")
+
+        # Tiến hành cào dữ liệu mới
+        users = self.collect_members(
+            max_scroll=max_scroll,
+            base_scroll_pause=base_scroll_pause
         )
 
-        members_tab.click()
-        time.sleep(after_click_wait)
+        print(f"🎯 Hoàn thành! Đã lưu tổng cộng {len(users)} thành viên mới.")
 
-        users = self.collect_members(max_scroll=max_scroll, scroll_pause=scroll_pause)
+        # Xuất .csv
+        convert_json_file_to_spreadsheet(json_filepath=self.output_path, output_file=self.output_path.replace(".json", ".csv"))
+        convert_json_file_to_spreadsheet(json_filepath=self.output_path, output_file=self.output_path.replace(".json", ".xlsx"))
 
-        with open(output_path, "w", encoding="utf-8") as f:
-            json.dump(users, f, ensure_ascii=False, indent=4)
-
-        print(f"✅ Saved {len(users)} users to {output_path}")
         return users
 
     # -------------------------
@@ -727,7 +862,6 @@ class FacebookBot:
         except Exception as e:
             print(e)
             return False
-
 
     def create_post(self, id, content="", img_paths=[]):
         self.driver.get(f"https://www.facebook.com/groups/{id}")

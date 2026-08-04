@@ -144,7 +144,7 @@ if __name__ == "__main__":
 
 
     # Thay 'du_lieu.json' bằng đường dẫn file .json thực tế trên máy của bạn
-    file_json_dau_vao = "users_group_KillingFloorClanESP.json" 
+    file_json_dau_vao = "output_KillingFloorClanESP.json" 
 
     # 1. Đọc file JSON và xuất ra file Excel
     convert_json_file_to_spreadsheet(
@@ -154,8 +154,8 @@ if __name__ == "__main__":
     )
 
     # 2. Đọc file JSON và xuất ra file CSV (Tách details thành các cột riêng)
-    convert_json_file_to_spreadsheet(
-        json_filepath=file_json_dau_vao, 
-        output_file="ket_qua.csv", 
-        join_details=False
-    )
+    # convert_json_file_to_spreadsheet(
+    #     json_filepath=file_json_dau_vao, 
+    #     output_file="ket_qua.csv", 
+    #     join_details=False
+    # )

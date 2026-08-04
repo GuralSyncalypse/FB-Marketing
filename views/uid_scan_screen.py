@@ -56,15 +56,77 @@ class UidScanScreen(tk.Frame):
         )
         self.btn_stop.pack(side="left", fill="x", expand=True, padx=(2, 0))
 
-        option_box = ttk.LabelFrame(left_frame, text=" Tùy chọn ", padding=8)
+        option_box = ttk.LabelFrame(left_frame, text=" Tùy chọn quét ", padding=8)
         option_box.pack(fill="x", pady=(0, 10))
 
+        # --- Checkbutton nhóm 1: Phạm vi quét ---
         self.chk_only_selected_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(
             option_box,
             text="Chỉ quét các group đang được chọn",
             variable=self.chk_only_selected_var,
-        ).pack(anchor="w", pady=(6, 0))
+        ).pack(anchor="w", pady=2)
+
+        # --- Checkbutton nhóm 2: Trình duyệt & An toàn ---
+        self.chk_headless_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            option_box,
+            text="Chạy ẩn trình duyệt (Headless mode)",
+            variable=self.chk_headless_var,
+        ).pack(anchor="w", pady=2)
+
+        self.chk_merge_files_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            option_box,
+            text="Gộp chung tất cả UID cào được vào 1 file",
+            variable=self.chk_merge_files_var,
+        ).pack(anchor="w", pady=2)
+
+        self.chk_skip_no_avatar_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            option_box,
+            text="Bỏ qua tài khoản không có ảnh đại diện",
+            variable=self.chk_skip_no_avatar_var,
+        ).pack(anchor="w", pady=2)
+
+        # --- Spinbox: Giới hạn số UID mỗi group ---
+        limit_frame = ttk.Frame(option_box)
+        limit_frame.pack(fill="x", pady=(6, 2))
+
+        ttk.Label(limit_frame, text="UID tối đa / Group:").pack(
+            side="left"
+        )
+
+        self.spn_limit_uid_var = tk.IntVar(value=0)  # 0 nghĩa là không giới hạn
+        spn_limit = ttk.Spinbox(
+            limit_frame,
+            from_=0,
+            to=100000,
+            increment=500,
+            textvariable=self.spn_limit_uid_var,
+            width=8,
+        )
+        spn_limit.pack(side="left", padx=5)
+        ttk.Label(limit_frame, text="(0 = Không giới hạn)").pack(side="left")
+
+        # --- Combobox: Tốc độ cuộn ---
+        speed_frame = ttk.Frame(option_box)
+        speed_frame.pack(fill="x", pady=(4, 2))
+
+        ttk.Label(speed_frame, text="Tốc độ cuộn:").pack(side="left")
+        self.cbo_speed_var = tk.StringVar(value="Vừa phải (2.5s)")
+        cbo_speed = ttk.Combobox(
+            speed_frame,
+            textvariable=self.cbo_speed_var,
+            values=[
+                "Nhanh (1.5s)",
+                "Vừa phải (2.5s)",
+                "An toàn (4.0s)",
+            ],
+            state="readonly",
+            width=15,
+        )
+        cbo_speed.pack(side="left", padx=5)
 
         self.lbl_status = ttk.Label(left_frame, text="Trạng thái: Sẵn sàng", foreground="blue")
         self.lbl_status.pack(anchor="w", pady=(4, 0))
@@ -194,13 +256,17 @@ class UidScanScreen(tk.Frame):
     def run_selenium_scan_process(self, user, target_groups):
         """Hàm thực thi logic Selenium chạy ngầm trong Thread"""
         print(f"\n[Selenium Quét UID] Bắt đầu tiến trình cho UID: {user}...")
-        obj = None
+        self.bot_obj = None  # ⚡ BỔ SUNG 1: Khởi tạo biến instance để hàm Stop có thể truy cập
         total_found = 0
 
         try:
             # Khởi tạo FacebookBot từ bot.py
             obj = bot.FacebookBot(self.controller.is_demo_mode)
             obj.user_agent = getattr(self.controller, "user_agent", None)
+            
+            # ⚡ BỔ SUNG 2: Gán cờ stop_event vào bot để hàm perform_search dùng được
+            obj.stop_event = self.stop_event 
+            self.bot_obj = obj 
 
             if self.stop_event.is_set():
                 return
@@ -213,7 +279,7 @@ class UidScanScreen(tk.Frame):
 
             # Lặp qua từng Group
             for idx, group in enumerate(target_groups, start=1):
-                # Kiểm tra nếu bấm Dừng giữa chừng
+                # Kiểm tra nếu bấm Dừng giữa các lượt quét
                 if self.stop_event.is_set():
                     print("🛑 Tiến trình đã bị người dùng dừng.")
                     break
@@ -221,24 +287,23 @@ class UidScanScreen(tk.Frame):
                 group_id = group.get("id")
                 group_name = group.get("name", group_id)
 
-                # Cập nhật trạng thái hiển thị thanh Statusbar
+                # Cập nhật trạng thái hiển thị
                 self.after(0, lambda g_name=group_name, i=idx, total=len(target_groups): 
                     self.set_status(f"[{i}/{total}] Đang quét nhóm: {g_name}...", color="orange")
                 )
 
                 try:
-                    # Chạy hàm perform_search quét dữ liệu
+                    obj.output_path = f"output_{group_id}.json"
+
                     members = obj.perform_search(
                         group_id=group_id,
-                        output_path=f"users_group_{group_id}.json",
-                        scroll_pause=1.5
+                        base_scroll_pause=1.5
                     )
 
-                    # Đếm số UID lấy được
                     group_count = len(members) if members else 0
                     total_found += group_count
 
-                    # ⚡ ĐƯA TỔNG SỐ UID CỦA GROUP LÊN TREEVIEW (1 DÒNG DUY NHẤT)
+                    # Đưa kết quả lên Treeview
                     self.after(0, self.add_group_result, group_name, group_id, group_count, "OK")
 
                 except Exception as group_err:
@@ -262,13 +327,15 @@ class UidScanScreen(tk.Frame):
             self.after(0, lambda err=str(e): messagebox.showerror("Lỗi Tiến Trình", f"Có lỗi xảy ra: {err}"))
 
         finally:
-            # Luôn dọn dẹp Selenium và bật lại các nút bấm
-            if obj:
+            # ⚡ BỔ SUNG 4: Dọn dẹp an toàn và xóa tham chiếu self.bot_obj
+            if self.bot_obj:
                 try:
-                    obj.close()
+                    self.bot_obj.close()
                 except Exception:
                     pass
+                self.bot_obj = None
 
+            # Bật lại các nút bấm giao diện
             self.after(0, lambda: self.btn_start.config(state=tk.NORMAL, text="Bắt đầu quét"))
             self.after(0, lambda: self.btn_stop.config(state=tk.DISABLED))
             
