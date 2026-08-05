@@ -2,8 +2,9 @@ from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from concurrent.futures import ThreadPoolExecutor
+from selenium.webdriver.chrome.options import Options as StandardOptions
 from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.chrome.options import Options
+import undetected_chromedriver as uc
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.common.exceptions import TimeoutException, NoSuchElementException, WebDriverException
@@ -72,40 +73,60 @@ class FacebookBot:
         except Exception as e:
             print(f"⚠️ Không thể lưu checkpoint: {e}")
 
-    def setup_driver(self):
-        """Hàm phụ trách cấu hình và khởi tạo Chrome Driver"""
-        chrome_options = Options()
+    def setup_driver(self, driver_type: str = "standard"):
+        """Cấu hình và khởi tạo Chrome Driver đã tối ưu tốc độ cào dữ liệu"""
+        mode = driver_type or getattr(self, "driver_type", "undetected")
+
+        if mode == "standard":
+            chrome_options = StandardOptions()
+            print("[Selenium Standard] Đang khởi tạo Selenium truyền thống...")
+        else:
+            chrome_options = uc.ChromeOptions()
+            print("[uc.Selenium] Đang khởi tạo Undetected ChromeDriver...")
+
+        # --- TỐI ƯU TỐC ĐỘ: CHẶN TẢI HÌNH ẢNH & TÀI NGUYÊN NẶNG ---
+        chrome_options.add_argument("--blink-settings=imagesEnabled=false")
+        chrome_options.add_argument("--disable-gpu")
+        chrome_options.add_argument("--disable-software-rasterizer")
         chrome_options.add_argument("--no-sandbox")
         chrome_options.add_argument("--disable-dev-shm-usage")
+        chrome_options.add_argument("--disable-notifications")
+        
+        # Chặn tải ảnh qua Preferences
+        prefs = {
+            "profile.managed_default_content_settings.images": 2,
+            "profile.managed_default_content_settings.stylesheet": 2, # Bật nếu muốn chặn cả CSS
+        }
+        chrome_options.add_experimental_option("prefs", prefs)
 
-        # --- XỬ LÝ CHẾ ĐỘ VISUALIZE ---
+        # --- XỬ LÝ HEADLESS ---
         if not self.visualize:
-            # 🚀 CHẾ ĐỘ 1: CHẠY NGẦM & TỐI ƯU HIỆU NĂNG (visualize = False)
-            chrome_options.add_argument("--headless=new")  # Chạy ẩn hoàn toàn
-            chrome_options.add_argument("--disable-gpu")
             chrome_options.add_argument("--window-size=1920,1080")
-            chrome_options.add_argument("--disable-notifications") # Tắt thông báo đẩy
-            
-            # (Tùy chọn) Tắt tải ảnh để quét nhanh và tiết kiệm tài nguyên
-            # chrome_options.add_argument("--blink-settings=imagesEnabled=false")
-            
-            print("[Selenium] Đang chạy ở chế độ CHẠY ẨN (Tối ưu hiệu năng)...")
+            if mode == "standard":
+                chrome_options.add_argument("--headless=new")
+            print(f"[{mode}] Đang chạy ở chế độ CHẠY ẨN (Headless)...")
         else:
-            # 👁️ CHẾ ĐỘ 2: CHẠY HIỂN THỊ CỬA SỔ (visualize = True)
-            chrome_options.add_argument("--start-maximized") # Bật to cửa sổ trình duyệt
-            print("[Selenium] Đang chạy ở chế độ HIỂN THỊ TRÌNH DUYỆT...")
+            chrome_options.add_argument("--start-maximized")
+            print(f"[{mode}] Đang chạy ở chế độ HIỂN THỊ CỬA SỔ...")
 
-        # Cấu hình User-Agent
-        if self.user_agent:
+        if getattr(self, "user_agent", None):
             chrome_options.add_argument(f"--user-agent={self.user_agent}")
+
+        # Khởi tạo Driver
+        if mode == "standard":
+            self.driver = webdriver.Chrome(options=chrome_options)
         else:
-            chrome_options.add_argument(
-                "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            self.driver = uc.Chrome(
+                options=chrome_options,
+                headless=not self.visualize,
+                use_subprocess=True,  # Khuyên dùng True để giảm treo socket khi cuộn
+                version_main=150,
             )
 
-        self.driver = webdriver.Chrome(options=chrome_options)
 
+    # -------------------------
+    # Module đăng nhập & quản lý Cookie
+    # -------------------------
     def save_cookies(self):
         try:
             with open(self.cookie_file, "wb") as f:
@@ -186,16 +207,18 @@ class FacebookBot:
         return False
 
     def login_with_cookies(self, uid: str, cookies: list) -> bool:
-        """
-        Hàm chính phụ trách mở browser, inject cookies để đăng nhập vào Facebook
-        Trả về True nếu thành công, False nếu thất bại.
-        """
+        """Hàm phụ trách mở browser, inject cookies để đăng nhập vào Facebook"""
         print(f"[UID: {uid}] Đang khởi tạo trình duyệt...")
-        try:
 
+        # 1. Khởi tạo driver và ngắt ngay nếu thất bại
+        try:
             self.setup_driver()
+            if not getattr(self, "driver", None):
+                print(f"[UID: {uid}] 🚨 Khởi tạo Driver thất bại (driver is None).")
+                return False
         except Exception as e:
-            print(e)
+            print(f"[UID: {uid}] 🚨 Lỗi setup_driver: {e}")
+            return False
         
         try:
             # 1. Đi tới Facebook trước khi add cookie
@@ -236,9 +259,6 @@ class FacebookBot:
             self.close() # Đóng driver ngay nếu lỗi giữa chừng
             return False
 
-    # -------------------------
-    # STEP 3: Smart login
-    # -------------------------
     def ensure_login(self):
         success = self.login_with_cookies()
 
@@ -247,7 +267,10 @@ class FacebookBot:
             self.login_and_save_cookies()
 
     # -------------------------
+
+    # -------------------------
     # Scan uid from group members
+    # --
     def extract_user_id(self, link):
         if not link:
             return None
@@ -274,63 +297,64 @@ class FacebookBot:
         )
         return username if username else None
 
-    def collect_members(
-        self,
-        max_scroll=9999,
-        base_scroll_pause=2.5,
-        max_retries_per_scroll=4,
-        stop_after_no_change=5,
-        autosave_every=20,
-    ):
+    # Tách hẳn collect_members thành một phương thức riêng của class
+    def collect_members(self, max_uids=0, base_scroll_pause=2.5, max_retries_per_scroll=4, stop_after_no_change=10, autosave_every=20):
         driver = self.driver
-
-        collected = {}
-        seen_links = set()
-        self.collected = collected
+        collected, seen_links = {}, set()
+        no_change_count, last_saved_count = 0, 0
 
         js_extract_members = """
-            return Array.from(document.querySelectorAll('div[role="listitem"]')).map(item => {
-                const linkElem = item.querySelector('a[role="link"][aria-label]');
-                if (!linkElem) return null;
+            // 1. Chỉ query những element CHƯA ĐƯỢC ĐÁNH DẤU
+            const items = document.querySelectorAll('div[role="listitem"]:not([data-scanned="1"])');
+            const newMembers = [];
 
-                const name = linkElem.getAttribute('aria-label') || '';
-                const href = linkElem.getAttribute('href') || '';
+            for (let i = 0; i < items.length; i++) {
+                const item = items[i];
+                item.setAttribute('data-scanned', '1');
 
+                // Tìm thẻ <a> chứa link cá nhân
+                const linkElem = item.querySelector('a[role="link"]');
+                if (!linkElem) continue;
+
+                // Lấy URL tuyệt đối thông qua property .href
+                const href = linkElem.href || '';
+                if (!href || href.includes('#')) continue;
+
+                // Lấy tên: Ưu tiên aria-label, nếu không có thì lấy innerText của thẻ link
+                const name = linkElem.getAttribute('aria-label') || linkElem.innerText.trim();
+
+                // Lấy avatar: Ưu tiên src/xlink:href thực tế
                 const imgElem = item.querySelector('image, img');
                 let avatar = '';
                 if (imgElem) {
-                    avatar = imgElem.getAttribute('xlink:href') || imgElem.getAttribute('src') || '';
+                    avatar = imgElem.getAttribute('xlink:href') || imgElem.src || '';
+                    // Bỏ qua nếu là ảnh placeholder base64
+                    if (avatar.startsWith('data:image')) avatar = '';
                 }
 
-                const textLines = item.innerText ? item.innerText.split('\\n').map(t => t.trim()).filter(Boolean) : [];
+                // Dùng Regex /\\r?\\n/ để split dòng an toàn trong chuỗi Python
+                const rawText = item.innerText || '';
+                const textLines = rawText.split(/\\r?\\n/).map(t => t.trim()).filter(Boolean);
 
-                return {
+                newMembers.push({
                     name: name,
                     link: href,
                     avatar: avatar,
                     details: textLines
-                };
-            }).filter(item => item !== null);
+                });
+            }
+
+            // Trả về danh sách kết quả cho driver.execute_script()
+            return newMembers;
         """
 
-        no_change_count = 0
-        last_saved_count = 0
-
-        # ==============================================================================
-        # VÒNG LẶP NGOÀI: for i in range(max_scroll)
-        # ==============================================================================
-        for i in range(max_scroll):
-            if self.is_stopped():
-                print("🛑 [User Action] Nhận lệnh dừng từ người dùng!")
+        while not self.is_stopped():
+            if max_uids > 0 and len(collected) >= max_uids:
                 break
 
-            print(f"🔄 Scroll {i + 1} | Tổng đã cào: {len(collected)}")
             previous_total = len(collected)
             new_data_found = False
 
-            # --------------------------------------------------------------------------
-            # VÒNG LẶP TRONG: Thử lấy dữ liệu nhiều lần nếu mạng chậm chưa load kịp
-            # --------------------------------------------------------------------------
             for retry in range(max_retries_per_scroll):
                 if self.is_stopped():
                     break
@@ -339,136 +363,82 @@ class FacebookBot:
                     raw_members = driver.execute_script(js_extract_members)
                     for item in raw_members:
                         link = item.get("link")
-
-                        if not link or link in seen_links:
+                        if any(x in link for x in ["photo", "story", "reel", "watch"]):
                             continue
 
-                        if any(
-                            x in link
-                            for x in ["photo", "story", "reel", "watch"]
-                        ):
-                            continue
-
-                        seen_links.add(link)
                         user_id = self.extract_user_id(link)
-
-                        if user_id:
+                        if user_id and user_id not in collected:
                             item["user_id"] = user_id
                             collected[user_id] = item
 
-                    # Đã lấy thêm được user mới -> Đánh dấu thành công và thoát vòng retry
                     if len(collected) > previous_total:
-                        print(
-                            f"✅ Lấy được {len(collected) - previous_total} thành viên mới."
-                        )
                         new_data_found = True
-                        break
+                        break  # Thoát retry lặp scroll thành công
 
                 except WebDriverException as e:
                     print(f"🚨 Mạng đứt hoặc lỗi Selenium: {e.msg}")
-                    print("   ⏳ Chờ 10 giây để kết nối hồi phục...")
-
                     if self.stop_event and self.stop_event.wait(timeout=10):
                         break
+                    continue # Nảy sang vòng lặp tiếp theo, tránh chạy tiếp code cuộn trang bên dưới
 
-                # Nếu chưa có dữ liệu mới -> Chờ tăng dần + Cuộn nhích nhẹ để kích thích FB load
+                # Chờ và scroll kích thích lazy-load
                 wait_time = base_scroll_pause * (retry + 1)
-                print(
-                    f"   ⏳ Mạng chưa tải dữ liệu mới, chờ {wait_time}s (Thử {retry + 1}/{max_retries_per_scroll})..."
-                )
-
                 if self.stop_event and self.stop_event.wait(timeout=wait_time):
-                    print("🛑 Hủy thời gian chờ do người dùng bấm Dừng.")
                     break
 
-                # Kích thích Facebook lazy-load bằng cách cuộn nhích nhẹ
                 try:
                     driver.execute_script("window.scrollBy(0, -300);")
                     time.sleep(0.3)
-                    driver.execute_script(
-                        "window.scrollTo(0, document.body.scrollHeight);"
-                    )
+                    driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
                 except Exception:
                     pass
 
-            # --------------------------------------------------------------------------
-            # SAU KHI KẾT THÚC RETRY -> KIỂM TRA DỪNG VÀ AUTOSAVE (CẤP VÒNG NGOÀI)
-            # --------------------------------------------------------------------------
-            if self.is_stopped():
-                break
-
-            # 1. Kiểm tra xem có dữ liệu mới sau toàn bộ lượt retry không
+            # Kiểm tra dừng do không có dữ liệu mới
             if not new_data_found:
                 no_change_count += 1
-                print(
-                    f"⚠️ Không có dữ liệu mới ({no_change_count}/{stop_after_no_change})"
-                )
+                print("⚠️ Không có dữ liệu mới sau nhiều lần scroll. Đếm:", no_change_count)
                 if no_change_count >= stop_after_no_change:
-                    print(
-                        "✅ Đã đến cuối danh sách hoặc mạng ngừng tải hoàn toàn."
-                    )
                     break
             else:
-                no_change_count = 0  # Reset đếm nếu thu thập được dữ liệu mới
+                no_change_count = 0
 
-            # 2. Tự động lưu checkpoint (luôn ghi đè dữ liệu mới nhất)
+            # Checkpoint autosave
             if len(collected) - last_saved_count >= autosave_every:
                 self.collected = collected
                 self._save_checkpoint()
                 last_saved_count = len(collected)
 
-            # 3. Cuộn xuống cuối trang chuẩn bị cho lần lặp (Scroll) tiếp theo
-            try:
-                driver.execute_script(
-                    "window.scrollTo(0, document.body.scrollHeight);"
-                )
-            except Exception:
-                pass
-
-        # Ghi đè checkpoint lần cuối khi hoàn thành / dừng hẳn
         self.collected = collected
         self._save_checkpoint()
-        print(
-            f"🏁 Đã lưu hoàn tất! Dữ liệu mới ({len(collected)} user) đã được bảo toàn."
-        )
         return list(collected.values())
 
-    def perform_search(
-        self,
-        group_url=None,
-        group_id=None,
-        max_scroll=9999,
-        timeout=30,
-        base_scroll_pause=2.5,
-    ):
-        if group_url:
-            target_url = group_url
-        elif group_id:
-            target_url = f"https://www.facebook.com/groups/{group_id}"
-        else:
-            raise ValueError("Cần cung cấp group_url hoặc group_id")
+    def perform_search(self, group_id=None, timeout=30, base_scroll_pause=2.5, *args, **kwargs):
+        if not group_id:
+            print("⚠️ Thiếu group_id, bỏ qua tìm kiếm.")
+            return []
+
+        max_uids = kwargs.get("max_uids", 0)
+        # Truy cập thẳng URL tab members
+        target_url = f"https://www.facebook.com/groups/{group_id}/members"
 
         print(f"🌐 Đang truy cập: {target_url}")
 
         try:
             self.driver.get(target_url)
-
-            # Chờ chuyển tab Members
-            members_tab = WebDriverWait(self.driver, timeout).until(
-                EC.element_to_be_clickable(
-                    (By.XPATH, "//a[contains(@href, 'members')]")
-                )
+            # Chờ trang load cơ bản (có thể chờ body hoặc 1 element đặc trưng của group)
+            WebDriverWait(self.driver, timeout).until(
+                EC.presence_of_element_located((By.TAG_NAME, "body"))
             )
-            members_tab.click()
-            print("👉 Đã nhấn vào tab Thành viên")
         except Exception as e:
-            print(f"⚠️ Lưu ý chuyển trang: {e}")
+            print(f"🚨 Không thể truy cập nhóm {group_id}: {e}")
+            return [] # Dừng ngay lập tức nếu không mở được trang
 
-        # Tiến hành cào dữ liệu mới
-        users = self.collect_members(
-            max_scroll=max_scroll,
-            base_scroll_pause=base_scroll_pause
-        )
+        # Tiến hành cào dữ liệu
+        users = self.collect_members(max_uids=max_uids, base_scroll_pause=base_scroll_pause) or []
+
+        if not users:
+            print("⚠️ Không thu thập được thành viên nào.")
+            return []
 
         print(f"🎯 Hoàn thành! Đã lưu tổng cộng {len(users)} thành viên mới.")
 

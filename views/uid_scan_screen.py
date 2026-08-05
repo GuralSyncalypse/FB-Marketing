@@ -67,28 +67,6 @@ class UidScanScreen(tk.Frame):
             variable=self.chk_only_selected_var,
         ).pack(anchor="w", pady=2)
 
-        # --- Checkbutton nhóm 2: Trình duyệt & An toàn ---
-        self.chk_headless_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(
-            option_box,
-            text="Chạy ẩn trình duyệt (Headless mode)",
-            variable=self.chk_headless_var,
-        ).pack(anchor="w", pady=2)
-
-        self.chk_merge_files_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(
-            option_box,
-            text="Gộp chung tất cả UID cào được vào 1 file",
-            variable=self.chk_merge_files_var,
-        ).pack(anchor="w", pady=2)
-
-        self.chk_skip_no_avatar_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(
-            option_box,
-            text="Bỏ qua tài khoản không có ảnh đại diện",
-            variable=self.chk_skip_no_avatar_var,
-        ).pack(anchor="w", pady=2)
-
         # --- Spinbox: Giới hạn số UID mỗi group ---
         limit_frame = ttk.Frame(option_box)
         limit_frame.pack(fill="x", pady=(6, 2))
@@ -295,10 +273,7 @@ class UidScanScreen(tk.Frame):
                 try:
                     obj.output_path = f"output_{group_id}.json"
 
-                    members = obj.perform_search(
-                        group_id=group_id,
-                        base_scroll_pause=1.5
-                    )
+                    members = obj.perform_search(group_id=group_id, base_scroll_pause=1.5, max_uids=self.spn_limit_uid_var.get())
 
                     group_count = len(members) if members else 0
                     total_found += group_count
