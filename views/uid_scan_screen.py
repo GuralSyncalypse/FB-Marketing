@@ -3,6 +3,12 @@ from tkinter import ttk, messagebox
 import threading
 import bot  # Import module bot chứa FacebookBot
 
+SPEED_MAP = {
+    "Nhanh (1.5s)": 1.5,
+    "Vừa phải (2.5s)": 2.5,
+    "An toàn (4.0s)": 4.0
+}
+
 class UidScanScreen(tk.Frame):
     def __init__(self, parent, controller):
         super().__init__(parent)
@@ -96,11 +102,7 @@ class UidScanScreen(tk.Frame):
         cbo_speed = ttk.Combobox(
             speed_frame,
             textvariable=self.cbo_speed_var,
-            values=[
-                "Nhanh (1.5s)",
-                "Vừa phải (2.5s)",
-                "An toàn (4.0s)",
-            ],
+            values=[key for key in SPEED_MAP.keys()],
             state="readonly",
             width=15,
         )
@@ -148,6 +150,11 @@ class UidScanScreen(tk.Frame):
         ).pack(side="left", fill="x", expand=True, padx=(0, 4))
 
         self.refresh_groups_preview()
+
+    def get_selected_speed(self) -> float:
+        selected_text = self.cbo_speed_var.get()
+        # Trả về số giây tương ứng, mặc định là 2.5s nếu không tìm thấy
+        return SPEED_MAP.get(selected_text, 2.5)
 
     def get_source_groups(self):
         groups = getattr(self.controller, "groups_data", []) or []
@@ -271,9 +278,9 @@ class UidScanScreen(tk.Frame):
                 )
 
                 try:
-                    obj.output_path = f"output_{group_id}.json"
+                    obj.output_path = f"output_{group_id}.jsonl"
 
-                    members = obj.perform_search(group_id=group_id, base_scroll_pause=1.5, max_uids=self.spn_limit_uid_var.get())
+                    members = obj.perform_search(group_id=group_id, base_scroll_pause=self.get_selected_speed(), max_uids=self.spn_limit_uid_var.get())
 
                     group_count = len(members) if members else 0
                     total_found += group_count

@@ -4,43 +4,39 @@ import pandas as pd
 
 def convert_json_file_to_spreadsheet(json_filepath, output_file="facebook_users.xlsx", join_details=True):
     """
-    Đọc file .json từ ổ đĩa và chuyển đổi sang file Excel (.xlsx) hoặc CSV (.csv).
-    
-    :param json_filepath: Đường dẫn tới file .json (Ví dụ: "data.json" hoặc "D:/data/users.json")
-    :param output_file: Tên file đầu ra (.xlsx hoặc .csv)
-    :param join_details: True để gộp mảng details thành 1 cột, False để tách thành nhiều cột
+    Đọc file .json hoặc .jsonl từ ổ đĩa và chuyển đổi sang file Excel (.xlsx) hoặc CSV (.csv).
     """
-    # 1. Kiểm tra file .json có tồn tại không
     if not os.path.exists(json_filepath):
         print(f"Lỗi: Không tìm thấy file '{json_filepath}'")
         return
 
-    # 2. Đọc file .json với bảng mã utf-8 (để tránh lỗi font chữ/tiếng Việt)
-    with open(json_filepath, 'r', encoding='utf-8') as f:
-        data = json.load(f)
-
     processed_rows = []
 
-    # 3. Xử lý từng đối tượng trong danh sách
-    for item in data:
-        row = {
-            "user_id": f"'{str(item.get('user_id', ''))}",  # Thêm ' để Excel giữ kiểu Text
-            "name": item.get("name", ""),
-            "link": item.get("link", ""),
-            "avatar": item.get("avatar", "")
-        }
-        
-        details = item.get("details", [])
-        
-        if join_details:
-            # Gộp các chi tiết bằng dấu phân cách |
-            row["details"] = " | ".join(details)
+    # 2. Đọc file theo đúng định dạng (.jsonl đọc từng dòng, .json đọc toàn bộ)
+    with open(json_filepath, 'r', encoding='utf-8') as f:
+        if json_filepath.endswith('.jsonl'):
+            data = (json.loads(line) for line in f if line.strip())
         else:
-            # Tách chi tiết ra thành các cột detail_1, detail_2,...
-            for idx, detail in enumerate(details, start=1):
-                row[f"detail_{idx}"] = detail
+            data = json.load(f)
 
-        processed_rows.append(row)
+        # 3. Xử lý từng đối tượng
+        for item in data:
+            row = {
+                "user_id": f"'{str(item.get('user_id', ''))}",
+                "name": item.get("name", ""),
+                "link": item.get("link", ""),
+                "avatar": item.get("avatar", "")
+            }
+            
+            details = item.get("details", [])
+            
+            if join_details:
+                row["details"] = " | ".join(details)
+            else:
+                for idx, detail in enumerate(details, start=1):
+                    row[f"detail_{idx}"] = detail
+
+            processed_rows.append(row)
 
     # 4. Xuất ra DataFrame và lưu file
     df = pd.DataFrame(processed_rows)
