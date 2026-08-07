@@ -70,13 +70,22 @@ def convert_json_file_to_spreadsheet(json_filepath, output_file="facebook_users.
     print(f"Đã chuyển đổi thành công từ '{json_filepath}' sang '{output_file}'!")
 
 class FacebookBot:
-    def __init__(self, visualize=False, output_path="users.json", stop_event=None):
+    def __init__(self, visualize=False, output_path="users.json", stop_event=None, on_save_batch=None):
         self.driver = None
         self.user_agent = None
         self.output_path = output_path
         self.stop_event = stop_event
 
         self.visualize = visualize
+
+        self.on_save_batch = on_save_batch
+        self._buffer = []
+
+    def _flush(self, file_name=None):
+        """Gửi dữ liệu trong buffer đi lưu và xả rỗng buffer."""
+        if self._buffer and self.on_save_batch:
+            self.on_save_batch(self._buffer, file_name)
+            self._buffer = []
 
     def is_stopped(self):
         """Hàm phụ trợ kiểm tra xem người dùng đã bấm nút Dừng hay chưa."""
@@ -324,6 +333,250 @@ class FacebookBot:
     # -------------------------
     # Scan uid from group members
     # --
+    def log_raw_response(self, res_data: dict, filename: str = "data.jsonl"):
+        """
+        Ghi nối tiếp (Append) từng raw response thành 1 dòng JSON độc lập.
+        Cực nhanh, tốn rất ít RAM và an toàn tuyệt đối khi bị crash.
+        """
+        with open(filename, "a", encoding="utf-8") as f:
+            f.write(json.dumps(res_data, ensure_ascii=False) + "\n")
+    
+    def fetch_group_members(self, group_id: str, cursor: str = None, count: int = 30) -> dict:
+        """
+        Thực thi GraphQL request với cơ chế Timeout và Fallback lấy Token an toàn.
+        """
+        js_script = """
+            const done = arguments[arguments.length - 1];
+            const groupId = arguments[0];
+            const cursor = arguments[1];
+            const count = arguments[2];
+
+            // 1. Giới hạn thời gian chờ tối đa 10 giây cho request JS
+            const timeoutId = setTimeout(() => {
+                done({ error: "JS_FETCH_TIMEOUT" });
+            }, 10000);
+
+            // 2. Lấy fb_dtsg token (có fallback qua Cookie)
+            let dtsgToken = "";
+            try {
+                dtsgToken = require('DTSGInitialData').token || require('DTSGInitData').token;
+            } catch(e) {
+                const match = document.cookie.match(/fb_dtsg=([^;]+)/);
+                if (match) dtsgToken = decodeURIComponent(match[1]);
+            }
+
+            // 3. Lấy User ID (có fallback qua Cookie c_user)
+            let userId = "";
+            try {
+                userId = require('CurrentUserInitialData').USER_ID || "";
+            } catch(e) {
+                const match = document.cookie.match(/c_user=([0-9]+)/);
+                if (match) userId = match[1];
+            }
+
+            if (!dtsgToken || !userId) {
+                clearTimeout(timeoutId);
+                return done({ error: "MISSING_AUTH_TOKENS" });
+            }
+
+            const payload = new URLSearchParams({
+                'av': userId,
+                '__user': userId,
+                'fb_dtsg': dtsgToken,
+                'fb_api_req_friendly_name': 'GroupsCometMembersPageNewMembersSectionRefetchQuery',
+                'doc_id': '27114388448203693',
+                'variables': JSON.stringify({
+                    'count': count,
+                    'cursor': cursor ? cursor : null,
+                    'groupID': groupId,
+                    'recruitingGroupFilterNonCompliant': false,
+                    'scale': 1,
+                    'id': groupId
+                }),
+                '__a': '1',
+                '__comet_req': '15'
+            });
+
+            fetch('https://www.facebook.com/api/graphql/', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: payload.toString(),
+                credentials: 'include'
+            })
+            .then(res => res.json())
+            .then(data => {
+                clearTimeout(timeoutId);
+                done(data);
+            })
+            .catch(err => {
+                clearTimeout(timeoutId);
+                done({ error: err.toString() });
+            });
+        """
+        return self.driver.execute_async_script(js_script, str(group_id), cursor, count)
+
+    def get_numeric_group_id(self, driver) -> str:
+        """
+        Trích xuất Numeric Group ID từ trang nhóm hiện tại qua Meta Tag hoặc JS State.
+        """
+        js_script = r"""
+            // Cách 1: Quét thẻ Meta iOS URL (Độ chính xác cao nhất)
+            const metaTag = document.querySelector('meta[property="al:ios:url"]');
+            if (metaTag && metaTag.content) {
+                const match = metaTag.content.match(/fb:\/\/group\/([0-9]+)/);
+                if (match) return match[1];
+            }
+
+            // Cách 2: Tìm qua Relay Route Params trong bộ nhớ JS
+            try {
+                const routeId = require('CometRouteStore').getRoute().params.groupID;
+                if (routeId) return routeId;
+            } catch(e) {}
+
+            // Cách 3: Quét Regex trực tiếp từ HTML Source
+            const html = document.documentElement.innerHTML;
+            const match = html.match(/"groupID":"([0-9]+)"/) || html.match(/"target_id":"([0-9]+)"/);
+            if (match) return match[1];
+
+            return null;
+        """
+        return driver.execute_script(js_script)
+
+
+    def scrape_group_members(
+        self, 
+        group_id: str, 
+        max_members: int = 5000, 
+        batch_size: int = 10, 
+        start_cursor: str = None,
+        retries: int = 3
+    ) -> list:
+        """
+        Cào danh sách thành viên nhóm và tự động dừng khi đạt đủ max_members UID.
+        Tích hợp cơ chế thử lại (retries) và lưu lại cursor cuối cùng nếu thất bại.
+        """
+        if not group_id:
+            print("⚠️ Thiếu group_id, bỏ qua tìm kiếm.")
+            return []
+
+        target_url = f"https://www.facebook.com/groups/{group_id}/members"
+        print(f"🌐 Đang truy cập: {target_url}")
+
+        try:
+            self.driver.get(target_url)
+            WebDriverWait(self.driver, 30).until(
+                EC.presence_of_element_located((By.TAG_NAME, "body"))
+            )
+        except Exception as e:
+            print(f"🚨 Không thể truy cập nhóm {group_id}: {e}")
+            return []
+
+        group_id = self.get_numeric_group_id(self.driver)
+
+        collected_uids = set()
+        all_members_data = []
+        
+        cursor = start_cursor
+        has_next_page = True
+        request_index = 1
+
+        unlimited = max_members <= 0
+        limit_text = "TẤT CẢ" if unlimited else f"{max_members}"
+
+        while not self.is_stopped():
+            if not (has_next_page and (unlimited or len(collected_uids) < max_members)):
+                break
+            
+            print(f"[*] Request #{request_index} | Đã cào: {len(collected_uids)}/{limit_text} UIDs (Cursor: {cursor})...")
+            
+            # --- CƠ CHẾ RETRY: Thử lại tối đa N lần ---
+            attempt = 0
+            success = False
+            raw_res = {}
+            edges = []
+            node = {}
+
+            while attempt < retries and not self.is_stopped():
+                attempt += 1
+                raw_res = self.fetch_group_members(group_id, cursor=cursor, count=batch_size)
+                self.log_raw_response(raw_res, filename="data.jsonl")
+
+                # Kiểm tra xem response có hợp lệ và có dữ liệu edges không
+                if "error" not in raw_res and "data" in raw_res:
+                    node = raw_res.get("data", {}).get("node", {}).get("new_members", {})
+                    edges = node.get("edges", [])
+                    if edges:
+                        success = True
+                        break  # Lấy dữ liệu thành công, thoát vòng lặp retry
+
+                print(f"⚠️ [Lần {attempt}/{retries}] Không lấy được dữ liệu hoặc API bị lỗi. Thử lại sau 3s...")
+                time.sleep(3)
+
+            # --- NẾU THẤT BẠI SAU N LẦN THỬ: LƯU CURSOR VÀ THOÁT ---
+            if not success or not edges:
+                print(f"🚨 Đã thử lại {retries} lần nhưng không có dữ liệu mới.")
+                print(f"💾 Lưu trạng thái end_cursor hiện tại: {cursor}")
+                
+                # Ghi cursor bị ngắt vào file checkpoint
+                checkpoint_data = {
+                    "group_id": group_id,
+                    "failed_at_cursor": cursor,
+                    "total_collected": len(collected_uids),
+                    "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
+                }
+                with open(f"{group_id}_checkpoint.json", "w", encoding="utf-8") as f_cp:
+                    json.dump(checkpoint_data, f_cp, ensure_ascii=False, indent=2)
+                    
+                break  # Kết thúc luồng cào của group này
+
+            # --- XỬ LÝ DỮ LIỆU KHI THÀNH CÔNG ---
+            for edge in edges:
+                m = edge.get("node", {})
+                uid = m.get("id")
+
+                if uid and uid not in collected_uids:
+                    collected_uids.add(uid)
+                    
+                    member_info = {
+                        "id": uid,
+                        "name": m.get("name"),
+                        "url": m.get("url"),
+                        "avatar": m.get("profile_picture", {}).get("uri"),
+                        "cursor": cursor
+                    }
+                    all_members_data.append(member_info)
+                    self._buffer.append(member_info)
+
+                    if not unlimited and len(collected_uids) >= max_members:
+                        break
+
+            file_name = group_id + '.jsonl'
+            self._flush(file_name)  # Ghi batch ra file jsonl
+
+            if not unlimited and len(collected_uids) >= max_members:
+                print(f"\n[THÀNH CÔNG] Đã thu thập đủ mục tiêu {max_members} UIDs!")
+                break
+
+            # Lấy cursor cho trang tiếp theo
+            page_info = node.get("page_info", {})
+            has_next_page = page_info.get("has_next_page", False)
+            cursor = page_info.get("end_cursor")
+
+            if not cursor:
+                print("[!] Đã duyệt đến cuối danh sách nhóm.")
+                break
+
+            request_index += 1
+            time.sleep(random.uniform(1.5, 2.5))
+
+        if unlimited:
+            print(f"\n[HOÀN THÀNH] Đã cào TẤT CẢ {len(collected_uids)} UIDs trong nhóm!")
+
+        return all_members_data
+    
+
+
+
     def extract_user_id(self, link):
         if not link:
             return None

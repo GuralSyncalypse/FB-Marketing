@@ -1,3 +1,4 @@
+import random as rand
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
@@ -18,11 +19,23 @@ import pickle
 import os
 import re
 import json
+import requests
 
-group_id = 'KillingFloorClanESP'
+group_id = '2396395143940094'
 urls = [
     f'https://www.facebook.com/groups/{group_id}'
 ]
+
+user_id = 61573394223842
+doc_id = 27114388448203693
+request_name = "GroupsCometMembersPageNewMembersSectionRefetchQuery"
+
+payload = {
+    "av": user_id,
+    "__user": "61573394223842",
+    "fb_dtsg": "",
+    "doc_id": doc_id
+}
 
 class FacebookBot:
     def __init__(self, email, password):
@@ -32,7 +45,191 @@ class FacebookBot:
         self.driver = None
         self.cookie_file = "fb_cookies.pkl"
 
-        self.init_driver(True)
+        self.init_driver(False)  # False để không tối ưu hóa, hiển thị trình duyệt
+
+    # -------------------------
+    # Lấy thông tin các thành viên mới trong nhóm bằng GraphQL API
+    # -------------------------
+    def log_raw_response(self, res_data: dict, filename: str = "data.json"):
+            """
+            Ghi bổ sung raw response của từng request vào file data.json dạng Mảng (Array).
+            """
+            responses = []
+            
+            # Nạp dữ liệu cũ từ file data.json nếu file đã tồn tại
+            if os.path.exists(filename) and os.path.getsize(filename) > 0:
+                try:
+                    with open(filename, "r", encoding="utf-8") as f:
+                        responses = json.load(f)
+                except json.JSONDecodeError:
+                    responses = []
+    
+            # Thêm response mới nhất vào danh sách
+            responses.append(res_data)
+    
+            # Ghi đè lại file data.json với định dạng đẹp dễ đọc (indent=4)
+            with open(filename, "w", encoding="utf-8") as f:
+                json.dump(responses, f, ensure_ascii=False, indent=4)
+
+    def fetch_group_members(self, group_id: str, cursor: str = None, count: int = 30) -> dict:
+        """
+        Thực thi GraphQL request với cơ chế Timeout và Fallback lấy Token an toàn.
+        """
+        js_script = """
+            const done = arguments[arguments.length - 1];
+            const groupId = arguments[0];
+            const cursor = arguments[1];
+            const count = arguments[2];
+
+            // 1. Giới hạn thời gian chờ tối đa 10 giây cho request JS
+            const timeoutId = setTimeout(() => {
+                done({ error: "JS_FETCH_TIMEOUT" });
+            }, 10000);
+
+            // 2. Lấy fb_dtsg token (có fallback qua Cookie)
+            let dtsgToken = "";
+            try {
+                dtsgToken = require('DTSGInitialData').token || require('DTSGInitData').token;
+            } catch(e) {
+                const match = document.cookie.match(/fb_dtsg=([^;]+)/);
+                if (match) dtsgToken = decodeURIComponent(match[1]);
+            }
+
+            // 3. Lấy User ID (có fallback qua Cookie c_user)
+            let userId = "";
+            try {
+                userId = require('CurrentUserInitialData').USER_ID || "";
+            } catch(e) {
+                const match = document.cookie.match(/c_user=([0-9]+)/);
+                if (match) userId = match[1];
+            }
+
+            if (!dtsgToken || !userId) {
+                clearTimeout(timeoutId);
+                return done({ error: "MISSING_AUTH_TOKENS" });
+            }
+
+            const payload = new URLSearchParams({
+                'av': userId,
+                '__user': userId,
+                'fb_dtsg': dtsgToken,
+                'fb_api_req_friendly_name': 'GroupsCometMembersPageNewMembersSectionRefetchQuery',
+                'doc_id': '27114388448203693',
+                'variables': JSON.stringify({
+                    'count': count,
+                    'cursor': cursor ? cursor : null,
+                    'groupID': groupId,
+                    'recruitingGroupFilterNonCompliant': false,
+                    'scale': 1,
+                    'id': groupId
+                }),
+                '__a': '1',
+                '__comet_req': '15'
+            });
+
+            fetch('https://www.facebook.com/api/graphql/', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: payload.toString(),
+                credentials: 'include'
+            })
+            .then(res => res.json())
+            .then(data => {
+                clearTimeout(timeoutId);
+                done(data);
+            })
+            .catch(err => {
+                clearTimeout(timeoutId);
+                done({ error: err.toString() });
+            });
+        """
+        return self.driver.execute_async_script(js_script, str(group_id), cursor, count)
+
+    def scrape_group_members(self, group_id: str, max_members: int = 5000, batch_size: int = 10, start_cursor=None) -> list:
+            """
+            Cào danh sách thành viên nhóm và tự động dừng khi đạt đủ max_members UID.
+            """
+            collected_uids = set()      # Dùng set để lọc trùng UID tự động
+            all_members_data = []       # Chứa thông tin chi tiết
+            
+            cursor = start_cursor
+            has_next_page = True
+            request_index = 1
+
+            # Cờ kiểm tra cào không giới hạn
+            unlimited = max_members <= 0
+            limit_text = "TẤT CẢ" if unlimited else f"{max_members}"
+
+            # Mở file ghi stream sẵn
+            with open("members_cleaned.jsonl", "a", encoding="utf-8") as f_out:
+                # Vòng lặp chạy khi còn trang tiếp theo VÀ (đang cào không giới hạn HOẶC chưa đủ max_members)
+                while has_next_page and (unlimited or len(collected_uids) < max_members):
+                    print(f"[*] Request #{request_index} | Đã cào: {len(collected_uids)}/{limit_text} UIDs (Cursor: {cursor})...")
+                    
+                    # 1. Gọi GraphQL Request
+                    raw_res = self.fetch_group_members(group_id, cursor=cursor, count=batch_size)
+                    
+                    # Ghi log raw response ra data.json
+                    self.log_raw_response(raw_res, filename="data.json")
+
+                    # 2. Kiểm tra lỗi
+                    if "error" in raw_res or "data" not in raw_res:
+                        print(f"[!] Dừng do lỗi API hoặc hết Session: {raw_res.get('error')}")
+                        break
+
+                    node = raw_res.get("data", {}).get("node", {}).get("new_members", {})
+                    edges = node.get("edges", [])
+
+                    if not edges:
+                        print("[!] Nhóm không còn thành viên nào mới để tải.")
+                        break
+
+                    # 3. Trích xuất và kiểm tra UID
+                    for edge in edges:
+                        m = edge.get("node", {})
+                        uid = m.get("id")
+
+                        if uid and uid not in collected_uids:
+                            collected_uids.add(uid)
+                            
+                            member_info = {
+                                "id": uid,
+                                "name": m.get("name"),
+                                "url": m.get("url"),
+                                "avatar": m.get("profile_picture", {}).get("uri")
+                            }
+                            all_members_data.append(member_info)
+
+                            # Ghi trực tiếp từng dòng vào file jsonl
+                            f_out.write(json.dumps(member_info, ensure_ascii=False) + "\n")
+
+                            # Kiểm tra dừng nếu có đặt giới hạn cụ thể
+                            if not unlimited and len(collected_uids) >= max_members:
+                                break
+
+                    # 4. ĐIỀU KIỆN DỪNG: Đã đạt đủ số lượng UID yêu cầu (chỉ áp dụng khi không 'unlimited')
+                    if not unlimited and len(collected_uids) >= max_members:
+                        print(f"\n[THÀNH CÔNG] Đã thu thập đủ mục tiêu {max_members} UIDs!")
+                        break
+
+                    # 5. Lấy cursor cho request kế tiếp
+                    page_info = node.get("page_info", {})
+                    has_next_page = page_info.get("has_next_page", False)
+                    cursor = page_info.get("end_cursor")
+
+                    if not cursor:
+                        print("[!] Đã duyệt đến cuối danh sách nhóm.")
+                        break
+
+                    request_index += 1
+                    time.sleep(rand.uniform(1.5, 2.5))  # Delay
+
+            if unlimited:
+                print(f"\n[HOÀN THÀNH] Đã cào TẤT CẢ {len(collected_uids)} UIDs trong nhóm!")
+
+            return all_members_data
+
+    # END
 
     def init_driver(self, optimized):
         options = webdriver.ChromeOptions()
@@ -230,6 +427,38 @@ class FacebookBot:
         username = link.replace("https://www.facebook.com/", "").strip("/")
         return username if username else None
 
+    def get_fb_dtsg(self):
+        """Extracts the fb_dtsg token from an active, logged-in Facebook session."""
+        
+        # Method 1: Execute JavaScript directly in the page context
+        js_scripts = [
+            "return require('DTSGInitialData').token;"
+            "return require('DTSGInitData').token;"
+        ]
+        
+        for script in js_scripts:
+            try:
+                token = self.driver.execute_script(script)
+                if token:
+                    return token
+            except Exception:
+                continue
+
+        # Method 2: Fallback to parsing page source with Regex
+        page_source = self.driver.page_source
+        
+        # Match standard DTSGInitialData pattern
+        match = re.search(r'"DTSGInitialData":\[\],"token":"([^"]+)"', page_source)
+        if match:
+            return match.group(1)
+            
+        # Generic fallback pattern for token values starting with 'NAfz'
+        match_fallback = re.search(r'"token":"(NAfz[^"]+)"', page_source)
+        if match_fallback:
+            return match_fallback.group(1)
+
+        return None
+
     def collect_members(self, max_scroll=9999):
         driver = self.driver
         collected = {}  # Dùng dict với key là user_id để tự động lọc trùng dữ liệu
@@ -342,7 +571,7 @@ class FacebookBot:
 
         print(f"✅ Saved {len(users)} users to {file_path}")
 
-    def close(self):
+    def close(self) -> None:
         self.driver.quit()
 
     
@@ -1134,23 +1363,78 @@ password = 'saile123456!'
 def main():
     start = time.perf_counter()
 
-    
+    # Đăng nhập
     bot = FacebookBot(email, password)
     bot.ensure_login()
 
-    link = 'https://www.facebook.com/share/v/1HjuUTp6Po/'
-    content = f'''
-        🚀 THE WIN CITY - ĐÓN SÓNG HẠ TẦNG KHU TÂY SÀI GÒN
 
-        📈 Cú hích hạ tầng: Vành đai 3, 4, cao tốc TP.HCM - Mộc Bài thúc đẩy Đức Hòa - Hậu Nghĩa hóa "rồng" công nghiệp & logistics.
-        🏙️ The Win City: Tọa lạc vị trí chiến lược, đón trọn tiềm năng tăng trưởng liên vùng.
+    bot.driver.get("https://www.facebook.com/groups/2396395143940094/members/")
+    time.sleep(3)
 
-        ▶️ Thông tin chi tiết: {link}
-    '''
+    # Xóa file data.json cũ (nếu muốn làm sạch dữ liệu từ lần chạy trước)
+    # if os.path.exists("data.json"):
+    #     os.remove("data.json")
 
-    bot.perform_search()
+    # total_count = 0
 
+    # # Mở file chứa thông tin member đã lọc
+    # with open("members_cleaned.jsonl", "a", encoding="utf-8") as f_out:
+    #     cursor = None
+    #     has_next_page = True
+    #     request_index = 1
 
+    #     while has_next_page:
+    #         print(f"[*] Đang gửi Request #{request_index} (Cursor: {cursor})...")
+            
+    #         # 1. Gọi GraphQL Request
+    #         raw_res = bot.fetch_group_members_selenium(group_id, cursor=cursor, count=30)
+            
+    #         # 2. LƯU RAW RESPONSE RA FILE DATA.JSON ĐỂ KIỂM TRA
+    #         bot.log_raw_response(raw_res, filename="data.json")
+    #         print(f"    -> Đã ghi log response #{request_index} vào data.json")
+
+    #         # 3. Kiểm tra lỗi nếu request thất bại
+    #         if "error" in raw_res or "data" not in raw_res:
+    #             print(f"[!] Dừng do lỗi: {raw_res.get('error')}")
+    #             break
+
+    #         node = raw_res.get("data", {}).get("node", {}).get("new_members", {})
+    #         edges = node.get("edges", [])
+
+    #         if not edges:
+    #             print("Không còn dữ liệu trả về.")
+    #             break
+
+    #         # 4. Trích xuất dữ liệu sạch
+    #         for edge in edges:
+    #             m = edge.get("node", {})
+    #             member_data = {
+    #                 "id": m.get("id"),
+    #                 "name": m.get("name"),
+    #                 "url": m.get("url"),
+    #                 "avatar": m.get("profile_picture", {}).get("uri")
+    #             }
+    #             f_out.write(json.dumps(member_data, ensure_ascii=False) + "\n")
+    #             total_count += 1
+
+    #         # 5. Lấy cursor cho request tiếp theo
+    #         page_info = node.get("page_info", {})
+    #         has_next_page = page_info.get("has_next_page", False)
+    #         cursor = page_info.get("end_cursor")
+
+    #         if not cursor:
+    #             break
+
+    #         request_index += 1
+    #         time.sleep(2.5)  # Nghỉ giữa các request
+
+    # print(f"\n[Hoàn thành] Tổng cộng lấy được {total_count} members. Xem toàn bộ response thô tại data.json.")
+
+    members = bot.scrape_group_members(group_id, max_members=50, batch_size=rand.randint(10, 30), start_cursor="AQHSo8gZxCBpYYJzqHZaYlAtNq44P0OocJDR5VlzYEN7nbLRyM1cXES6jKfRqMaJ3lwgYXTCy8oYAnvhKSSTIjtzaQ")
+
+    print(f"Tổng số UID thực tế cào được: {len(members)}")
+
+    input("Press Enter to continue...")
     bot.close()
 
     end = time.perf_counter()

@@ -1,3 +1,5 @@
+import json
+import time
 import tkinter as tk
 from tkinter import ttk, messagebox
 import threading
@@ -73,40 +75,34 @@ class UidScanScreen(tk.Frame):
             variable=self.chk_only_selected_var,
         ).pack(anchor="w", pady=2)
 
-        # --- Spinbox: Giới hạn số UID mỗi group ---
+        # --- Frame chứa giới hạn UID & Số lần thử lại ---
         limit_frame = ttk.Frame(option_box)
         limit_frame.pack(fill="x", pady=(6, 2))
 
-        ttk.Label(limit_frame, text="UID tối đa / Group:").pack(
-            side="left"
-        )
-
-        self.spn_limit_uid_var = tk.IntVar(value=0)  # 0 nghĩa là không giới hạn
-        spn_limit = ttk.Spinbox(
+        # Spinbox 1: Giới hạn UID
+        ttk.Label(limit_frame, text="Giới hạn UID/Group:").grid(row=0, column=0, sticky="w", padx=(0, 5))
+        self.spin_max_members_var = tk.IntVar(value=5000)
+        ttk.Spinbox(
             limit_frame,
             from_=0,
-            to=100000,
+            to=500000,
             increment=500,
-            textvariable=self.spn_limit_uid_var,
-            width=8,
-        )
-        spn_limit.pack(side="left", padx=5)
-        ttk.Label(limit_frame, text="(0 = Không giới hạn)").pack(side="left")
+            textvariable=self.spin_max_members_var,
+            width=10
+        ).grid(row=0, column=1, sticky="w", pady=2)
+        ttk.Label(limit_frame, text="(0 = Tất cả)").grid(row=0, column=2, sticky="w", padx=(5, 0))
 
-        # --- Combobox: Tốc độ cuộn ---
-        speed_frame = ttk.Frame(option_box)
-        speed_frame.pack(fill="x", pady=(4, 2))
-
-        ttk.Label(speed_frame, text="Tốc độ cuộn:").pack(side="left")
-        self.cbo_speed_var = tk.StringVar(value="Vừa phải (2.5s)")
-        cbo_speed = ttk.Combobox(
-            speed_frame,
-            textvariable=self.cbo_speed_var,
-            values=[key for key in SPEED_MAP.keys()],
-            state="readonly",
-            width=15,
-        )
-        cbo_speed.pack(side="left", padx=5)
+        # Spinbox 2: Số lần thử lại (Retries)
+        ttk.Label(limit_frame, text="Số lần thử lại (Retries):").grid(row=1, column=0, sticky="w", padx=(0, 5), pady=(4, 0))
+        self.spin_retries_var = tk.IntVar(value=3)
+        ttk.Spinbox(
+            limit_frame,
+            from_=1,
+            to=10,
+            increment=1,
+            textvariable=self.spin_retries_var,
+            width=10
+        ).grid(row=1, column=1, sticky="w", pady=(4, 0))
 
         self.lbl_status = ttk.Label(left_frame, text="Trạng thái: Sẵn sàng", foreground="blue")
         self.lbl_status.pack(anchor="w", pady=(4, 0))
@@ -203,6 +199,14 @@ class UidScanScreen(tk.Frame):
     # LOGIC CHẠY TỰ ĐỘNG VỚI SELENIUM THREADING
     # =========================================================================
 
+    def handle_save_batch(self, batch_data, file_name=None):
+        """Hàm lưu dữ liệu"""
+        print(f"--> [MAIN] Đang ghi batch {len(batch_data)} bản ghi vào file...")
+
+        with open(file_name, "a", encoding="utf-8") as f:
+            for item in batch_data:
+                f.write(json.dumps(item, ensure_ascii=False) + "\n")
+
     def start_uid_scan(self):
         # 1. Lấy và kiểm tra tài khoản đăng nhập
         user_id = getattr(self.controller, "ent_uid_shared", None)
@@ -246,7 +250,7 @@ class UidScanScreen(tk.Frame):
 
         try:
             # Khởi tạo FacebookBot từ bot.py
-            obj = bot.FacebookBot(self.controller.is_demo_mode)
+            obj = bot.FacebookBot(self.controller.is_demo_mode, on_save_batch=self.handle_save_batch)
             obj.user_agent = getattr(self.controller, "user_agent", None)
             
             # ⚡ BỔ SUNG 2: Gán cờ stop_event vào bot để hàm perform_search dùng được
@@ -278,9 +282,11 @@ class UidScanScreen(tk.Frame):
                 )
 
                 try:
+                    self.output_file = f"output_{group_id}.jsonl"
                     obj.output_path = f"output_{group_id}.jsonl"
 
-                    members = obj.perform_search(group_id=group_id, base_scroll_pause=self.get_selected_speed(), max_uids=self.spn_limit_uid_var.get())
+                    #members = obj.perform_search(group_id=group_id, base_scroll_pause=self.get_selected_speed(), max_uids=self.spn_limit_uid_var.get())
+                    members = obj.scrape_group_members(group_id=group_id, max_members=self.spn_limit_uid_var.get(), start_cursor=None, retries=self.spin_retries_var.get())
 
                     group_count = len(members) if members else 0
                     total_found += group_count
@@ -309,6 +315,7 @@ class UidScanScreen(tk.Frame):
             self.after(0, lambda err=str(e): messagebox.showerror("Lỗi Tiến Trình", f"Có lỗi xảy ra: {err}"))
 
         finally:
+            time.sleep(30)  # Đợi 5 giây trước khi dọn dẹp để người dùng thấy thông báo
             # ⚡ BỔ SUNG 4: Dọn dẹp an toàn và xóa tham chiếu self.bot_obj
             if self.bot_obj:
                 try:
