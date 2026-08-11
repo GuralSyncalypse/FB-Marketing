@@ -5,8 +5,6 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 # Nếu các biến toàn cục này được dùng ở file khác, bạn nên cân nhắc trả về qua callback
 # Ở đây tạm thời giữ nguyên cấu trúc logic của bạn
 class ExtensionHandler(BaseHTTPRequestHandler):
-    log_callback_function = None
-
     def __init__(self, request, client_address, server):
         # Lấy hàm callback được lưu trong server object
         self.on_data_received = server.on_data_received
@@ -22,17 +20,10 @@ class ExtensionHandler(BaseHTTPRequestHandler):
             user_agent = data.get("user_agent", "")
             cookies = data.get("cookie_json", [])
             
-
-            if self.log_callback_function:
-                ExtensionHandler.log_callback_function("\n" + "="*50)
-                ExtensionHandler.log_callback_function("[SERVER] NHẬN DATA THÀNH CÔNG TỪ EXTENSION")
-                ExtensionHandler.log_callback_function(f"-> UID nhận được: {uid}")
-                ExtensionHandler.log_callback_function("="*50)
-            else:
-                print("\n" + "="*50)
-                print("[SERVER] NHẬN DATA THÀNH CÔNG TỪ EXTENSION")
-                print(f"-> UID nhận được: {uid}")
-                print("="*50)
+            print("\n" + "="*50)
+            print("[SERVER] NHẬN DATA THÀNH CÔNG TỪ EXTENSION")
+            print(f"-> UID nhận được: {uid}")
+            print("="*50)
 
             # Gói tất cả vào một dictionary
             session_data = {
@@ -68,25 +59,20 @@ class ExtensionHandler(BaseHTTPRequestHandler):
         return
 
 
-def start_local_server(port, on_uid_received_callback, on_log_callback=None):
+def start_local_server(port, on_uid_received_callback):
     def run_server():
         try:
-            ExtensionHandler.log_callback_function = on_log_callback
             server_address = ('', port)
             httpd = HTTPServer(server_address, ExtensionHandler)
             httpd.on_data_received = on_uid_received_callback
             
             msg = f"[Server] Đang chạy ngầm tại http://localhost:{port}..."
             print(msg)
-            if on_log_callback:
-                on_log_callback(msg) # Bắn log về UI
                 
             httpd.serve_forever()
         except Exception as e:
             err_msg = f"[Server Lỗi] Không thể khởi động: {str(e)}"
             print(err_msg)
-            if on_log_callback:
-                on_log_callback(err_msg)
 
     server_thread = threading.Thread(target=run_server, daemon=True)
     server_thread.start()
