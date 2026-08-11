@@ -255,7 +255,10 @@ class DevelopScreen(tk.Frame):
             # 2. Khởi tạo Bot và Đăng nhập
             self.current_bot = bot.FacebookBot(self.controller.is_demo_mode)
             self.after(0, lambda: self.lbl_status.config(text="Trạng thái: Đang đăng nhập...", foreground="orange"))
-            self.current_bot.login_with_cookies(user, self.controller.cookies)
+            success = self.current_bot.start_browser(user, user_agent=self.controller.get_user_agent())
+            if not success:
+                self.after(0, lambda: messagebox.showerror("Lỗi", "Đăng nhập thất bại!"))
+                return
 
             # 3. Lấy danh sách Bài đăng (đã chọn) và Nhóm (đã chọn)
             posts = self.get_checked_posts()

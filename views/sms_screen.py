@@ -138,7 +138,10 @@ class SmsScreen(tk.Frame):
         try:
             obj = bot.FacebookBot(self.controller.is_demo_mode)
             obj.user_agent = self.controller.user_agent
-            obj.login_with_cookies(user, self.controller.cookies)
+            success = obj.start_browser(user, user_agent=self.controller.get_user_agent())
+            if not success:
+                self.after(0, lambda: messagebox.showerror("Lỗi", "Đăng nhập thất bại!"))
+                return
 
             success_count = 0
             for uid in uids:

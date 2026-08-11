@@ -209,11 +209,9 @@ class UidScanScreen(tk.Frame):
 
     def start_uid_scan(self):
         # 1. Lấy và kiểm tra tài khoản đăng nhập
-        user_id = getattr(self.controller, "ent_uid_shared", None)
-        user = user_id.get() if user_id else ""
-        empty_uid = getattr(self.controller, "empty_uid", "")
+        user_id = self.controller.get_uid()
 
-        if not user or user == empty_uid:
+        if not self.controller.has_uid:
             messagebox.showerror("Lỗi", "Vui lòng nhập/chọn tài khoản trước khi quét!")
             return
 
@@ -237,38 +235,35 @@ class UidScanScreen(tk.Frame):
         # 4. Tạo thread chạy Selenium ngầm (daemon=True)
         scan_thread = threading.Thread(
             target=self.run_selenium_scan_process,
-            args=(user, source_groups),
+            args=(user_id, source_groups),
             daemon=True
         )
         scan_thread.start()
 
     def run_selenium_scan_process(self, user, target_groups):
-        """Hàm thực thi logic Selenium chạy ngầm trong Thread"""
+        """Hàm thực thi logic Selenium chạy ngầm trong Thread."""
         print(f"\n[Selenium Quét UID] Bắt đầu tiến trình cho UID: {user}...")
-        self.bot_obj = None  # ⚡ BỔ SUNG 1: Khởi tạo biến instance để hàm Stop có thể truy cập
         total_found = 0
+        total_groups = len(target_groups)
 
         try:
-            # Khởi tạo FacebookBot từ bot.py
-            obj = bot.FacebookBot(self.controller.is_demo_mode, on_save_batch=self.handle_save_batch)
-            obj.user_agent = getattr(self.controller, "user_agent", None)
-            
-            # ⚡ BỔ SUNG 2: Gán cờ stop_event vào bot để hàm perform_search dùng được
-            obj.stop_event = self.stop_event 
-            self.bot_obj = obj 
+            # Khởi tạo FacebookBot
+            bot_obj = bot.FacebookBot(
+                self.controller.is_demo_mode, 
+                on_save_batch=self.handle_save_batch
+            )
+            bot_obj.stop_event = self.stop_event
 
             if self.stop_event.is_set():
                 return
 
             # Đăng nhập bằng Cookies
-            is_login = obj.login_with_cookies(user, getattr(self.controller, "cookies", []))
-            if not is_login:
-                self.after(0, lambda: messagebox.showerror("Lỗi", "Đăng nhập Cookies thất bại!"))
+            if not bot_obj.start_browser(user, user_agent=self.controller.get_user_agent()):
+                self.after(0, lambda: messagebox.showerror("Lỗi", "Đăng nhập thất bại!"))
                 return
 
             # Lặp qua từng Group
             for idx, group in enumerate(target_groups, start=1):
-                # Kiểm tra nếu bấm Dừng giữa các lượt quét
                 if self.stop_event.is_set():
                     print("🛑 Tiến trình đã bị người dùng dừng.")
                     break
@@ -276,58 +271,54 @@ class UidScanScreen(tk.Frame):
                 group_id = group.get("id")
                 group_name = group.get("name", group_id)
 
-                # Cập nhật trạng thái hiển thị
-                self.after(0, lambda g_name=group_name, i=idx, total=len(target_groups): 
-                    self.set_status(f"[{i}/{total}] Đang quét nhóm: {g_name}...", color="orange")
+                self.after(0, lambda name=group_name, i=idx: 
+                    self.set_status(f"[{i}/{total_groups}] Đang quét nhóm: {name}...", color="orange")
                 )
 
                 try:
-                    self.output_file = f"output_{group_id}.jsonl"
-                    obj.output_path = f"output_{group_id}.jsonl"
+                    output_path = f"output_{group_id}.jsonl"
+                    bot_obj.output_path = output_path
 
-                    #members = obj.perform_search(group_id=group_id, base_scroll_pause=self.get_selected_speed(), max_uids=self.spn_limit_uid_var.get())
-                    members = obj.scrape_group_members(group_id=group_id, max_members=self.spn_limit_uid_var.get(), start_cursor=None, retries=self.spin_retries_var.get())
+                    members = bot_obj.scrape_group_members(
+                        group_id=group_id, 
+                        max_members=self.spin_max_members_var.get(), 
+                        retries=self.spin_retries_var.get()
+                    )
 
-                    group_count = len(members) if members else 0
+                    group_count = members
                     total_found += group_count
-
-                    # Đưa kết quả lên Treeview
                     self.after(0, self.add_group_result, group_name, group_id, group_count, "OK")
 
                 except Exception as group_err:
                     print(f"❌ Lỗi khi quét group {group_id}: {group_err}")
                     self.after(0, self.add_group_result, group_name, group_id, 0, "Lỗi Quét")
 
-            # Thông báo hoàn tất / dừng
-            if self.stop_event.is_set():
-                self.after(0, lambda: messagebox.showwarning(
-                    "Đã dừng", 
-                    f"Đã dừng tiến trình quét!\nTổng cộng đã thu thập được {total_found:,} UIDs."
-                ))
-            else:
-                self.after(0, lambda: messagebox.showinfo(
-                    "Hoàn tất", 
-                    f"Đã quét xong {len(target_groups)} groups!\nTổng cộng thu thập được {total_found:,} UIDs."
-                ))
+            # Thông báo kết quả cuối cùng
+            is_stopped = self.stop_event.is_set()
+            title = "Đã dừng" if is_stopped else "Hoàn tất"
+            msg = f"{'Đã dừng tiến trình quét' if is_stopped else f'Đã quét xong {total_groups} groups'}!\nTổng cộng thu thập được {total_found:,} UIDs."
+            show_box = messagebox.showwarning if is_stopped else messagebox.showinfo
+            
+            self.after(0, lambda: show_box(title, msg))
 
         except Exception as e:
             print(f"❌ Lỗi tiến trình quét UID: {e}")
             self.after(0, lambda err=str(e): messagebox.showerror("Lỗi Tiến Trình", f"Có lỗi xảy ra: {err}"))
 
         finally:
-            time.sleep(30)  # Đợi 5 giây trước khi dọn dẹp để người dùng thấy thông báo
-            # ⚡ BỔ SUNG 4: Dọn dẹp an toàn và xóa tham chiếu self.bot_obj
-            if self.bot_obj:
+            # Dọn dẹp tài nguyên
+            if bot_obj:
                 try:
-                    self.bot_obj.close()
+                    bot_obj.close()
                 except Exception:
                     pass
-                self.bot_obj = None
+                bot_obj = None
 
-            # Bật lại các nút bấm giao diện
+            # Cập nhật UI kết thúc
+            is_stopped = self.stop_event.is_set()
             self.after(0, lambda: self.btn_start.config(state=tk.NORMAL, text="Bắt đầu quét"))
             self.after(0, lambda: self.btn_stop.config(state=tk.DISABLED))
-            
-            status_text = "Đã dừng quét" if self.stop_event.is_set() else "Hoàn tất quét"
-            status_color = "red" if self.stop_event.is_set() else "green"
-            self.after(0, lambda: self.set_status(status_text, color=status_color))
+            self.after(0, lambda: self.set_status(
+                "Đã dừng quét" if is_stopped else "Hoàn tất quét", 
+                color="red" if is_stopped else "green"
+            ))

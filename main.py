@@ -18,39 +18,95 @@ class App(tk.Tk):
 
   def __init__(self):
     super().__init__()
-    self.title("Phần mềm Quản lý Tính năng - Nhận Data từ Extension")
+    self.title("H2 Tool - Công cụ Marketing Facebook")
     self.geometry("950x700")
+
+    self.protocol("WM_DELETE_WINDOW", self.__on_close)
 
     # --- Biến cấu hình chung ---
     self.is_demo_mode = False
+    self.empty_uid = "Chờ tín hiệu từ Extension..."
+
 
     # --- Khởi tạo dữ liệu ---
+    self.has_uid = False
     self.selected_files_s1 = []
     self.selected_files_s2 = []
-    self.empty_uid = "Chờ tín hiệu từ Extension..."
 
     # Biến lưu trữ dữ liệu từ server
     self.uid = ""
     self.cookies = []
-    self.user_agent = ""
+
+    # Biến dùng chung
+    self.groups_data = []
 
     # --- Xây dựng các thành phần Giao diện ---
-    self._build_menu()  # 🌟 Thêm thanh Taskbar / Menu Bar ở trên cùng
-    self._build_shared_panel()  # 1. Khu vực thông tin phía trên (Cố định chiều cao)
-    # self._build_log_panel()         # 2. Khu vực Log phía dưới (Cố định chiều cao, không cho expand)
-    self._build_navigation_tabs(
-        2
-    )  # 3. Khu vực Notebook ở giữa (Sẽ tự giãn nở chiếm phần còn lại)
+    self.__build_menu()  # 🌟 Thêm thanh Taskbar / Menu Bar ở trên cùng
+    self.__build_shared_panel()  # 1. Khu vực thông tin phía trên (Cố định chiều cao)
+    self.__build_navigation_tabs()  # 2. Khu vực Notebook (Tab) chính
 
     # --- Khởi chạy dịch vụ ngầm ---
     start_local_server(
         port=8000,
-        on_uid_received_callback=self.on_server_received,
-        on_log_callback=None,
+        on_uid_received_callback=self.on_server_received
     )
 
+
+  # Hàm dùng chung
+  def get_uid(self) -> str:
+    """Lấy UID hiện tại từ Entry"""
+    return self.ent_uid_shared.get().strip()
+
+  def get_user_agent(self) -> str:
+    """Lấy User Agent hiện tại từ Entry"""
+    return self.ent_ua.get().strip()
+
+  # ---
+
+  def load_data(self) -> list:
+    """Đọc dữ liệu của User chỉ trong 1 dòng"""
+    try:
+        with open("groups_saved.json", "r", encoding="utf-8") as f:
+            data = json.load(f)
+            # Lấy trực tiếp groups của uid, nếu không có trả về []
+            return data.get(str(self.uid), {}).get("groups", [])
+    except Exception:
+        return []
+
+  def save_data(self) -> bool:
+      """Lưu dữ liệu của User không cần vòng lặp"""
+      if not self.uid:
+          return False
+
+      file_path = "groups_saved.json"
+      data = {}
+
+      # 1. Đọc file cũ
+      if os.path.exists(file_path):
+          try:
+              with open(file_path, "r", encoding="utf-8") as f:
+                  data = json.load(f)
+          except Exception:
+              data = {}
+
+      # 2. Cập nhật hoặc thêm mới User trực tiếp
+      data[str(self.uid)] = {"groups": self.groups_data}
+
+      # 3. Ghi lại file
+      with open(file_path, "w", encoding="utf-8") as f:
+          json.dump(data, f, ensure_ascii=False, indent=4)
+      return True
+  
+  def __on_close(self):
+    print("Đang lưu trạng thái ứng dụng...")
+
+    # Pipeline 1: Lưu dữ liệu nhóm hiện tại của User
+    self.save_data()
+    
+    self.destroy()  # Giải phóng giao diện và thoát hẳn
+
   # ================= THÊM THANH MENU BAR (TASKBAR) =================
-  def _build_menu(self):
+  def __build_menu(self):
     """Xây dựng thanh Menu Bar trên cùng của ứng dụng"""
     menubar = tk.Menu(self)
 
@@ -114,7 +170,7 @@ class App(tk.Tk):
 
   # =========================================================================
 
-  def _build_shared_panel(self):
+  def __build_shared_panel(self):
     """Xây dựng khu vực cấu hình thông tin tài khoản dùng chung phía trên (Đã thu gọn)"""
     top_shared_frame = ttk.LabelFrame(
         self, text=" Thông tin tài khoản hiện tại ", padding=10
@@ -167,47 +223,23 @@ class App(tk.Tk):
     )
     btn_show_groups.pack(side="left")
 
-    # Biến cục bộ để lưu danh sách group phục vụ cho cửa sổ popup
-    self.groups_data = []
-
   def get_selected_groups(self):
     """Trả về danh sách các object group đang được tích chọn"""
-    if not hasattr(self, "groups_data") or not self.groups_data:
-      return []
+    # Sử dụng getattr để lấy dữ liệu an toàn, mặc định là [] nếu chưa có attribute
+    groups = getattr(self, "groups_data", []) or []
+    return [g for g in groups if g.get("checked", False)]
 
-    # Lọc ra những nhóm có 'checked' là True
-    return [g for g in self.groups_data if g.get("checked", False)]
+  def update_group_selection(self):
+    """Cập nhật UI số lượng nhóm đã chọn"""
+    groups = getattr(self, "groups_data", []) or []
+    selected_count = len(self.get_selected_groups())  # Tái sử dụng hàm trên
+    total_count = len(groups)
+    
+    self.lbl_group_count_var.set(f"Đã chọn: {selected_count}/{total_count} nhóm")
 
   def open_groups_window(self):
     """Mở cửa sổ mới (Popup) hiển thị chi tiết danh sách nhóm và tích chọn"""
-
     current_uid = self.ent_uid_shared.get()
-
-    file_path = "groups_saved.json"
-    if current_uid and os.path.exists(file_path):
-      try:
-        with open(file_path, "r", encoding="utf-8") as f:
-          full_json_data = json.load(f)
-
-          found_data = False
-          for item in full_json_data:
-            if current_uid in item:
-              self.groups_data = item[current_uid].get("groups", [])
-              found_data = True
-              print(
-                  f"Đã tự động nạp {len(self.groups_data)} nhóm của UID"
-                  f" {current_uid} từ file JSON."
-              )
-              break
-
-          if not found_data:
-            self.groups_data = []
-      except Exception as e:
-        print(f"Lỗi đọc file JSON khi mở cửa sổ: {e}")
-        self.groups_data = []
-    else:
-      if not hasattr(self, "groups_data"):
-        self.groups_data = []
 
     # ================= KHỞI TẠO GIAO DIỆN POPUP =================
     groups_win = tk.Toplevel(self)
@@ -335,23 +367,17 @@ class App(tk.Tk):
     rad_none.pack(side="left", padx=5)
 
     def save_and_close():
-      selected_count = sum(
-          1 for g in self.groups_data if g.get("checked", False)
-      )
-      self.lbl_group_count_var.set(
-          f"Đã quét: {len(self.groups_data)} groups (Đang chọn:"
-          f" {selected_count})"
-      )
+      self.update_group_selection()
       groups_win.destroy()
 
     btn_save = ttk.Button(
-        toolbar, text="Xác nhận & Đóng", command=save_and_close
+        toolbar, text="Xác nhận", command=save_and_close
     )
     btn_save.pack(side="right", padx=5)
 
     refresh_tree()
 
-  def _build_navigation_tabs(self, num_tabs):
+  def __build_navigation_tabs(self):
     """Xây dựng khu vực Notebook và nhúng các màn hình tính năng vào"""
     self.notebook = ttk.Notebook(self)
     self.notebook.pack(fill="both", expand=True, padx=5, pady=5)
@@ -375,26 +401,20 @@ class App(tk.Tk):
       self.tabs.append(tab)
       self.screens[label] = screen
 
-  def _build_log_panel(self):
-    """Xây dựng ô hiển thị log hệ thống ở dưới cùng"""
-    log_frame = ttk.LabelFrame(self, text=" Nhật ký hoạt động ", padding=5)
-    log_frame.pack(side="bottom", fill="x", expand=False, padx=10, pady=5)
-
-    self.txt_log = tk.Text(log_frame, height=8, width=50, bg="#f8f9fa")
-    self.txt_log.pack(expand=True, fill=tk.BOTH)
-
   # ================= CÁC HÀM XỬ LÝ LOGIC =================
+  def save_to_profile_folder(self, uid: str, cookies: list):
+    """Lưu file cookies.json vào thư mục profiles/{uid}"""
+    profile_dir = os.path.join("profiles", uid)
+    os.makedirs(profile_dir, exist_ok=True)  # Tự động tạo thư mục nếu chưa có
+
+    cookie_file_path = os.path.join(profile_dir, "cookies.json")
+    with open(cookie_file_path, "w", encoding="utf-8") as f:
+        json.dump(cookies, f, indent=4, ensure_ascii=False)
+
   def _update_ui_after_scan(self):
     self.lbl_group_count_var.set(f"Đã quét: {len(self.groups_data)} groups")
     if hasattr(self, "popup_refresh_func") and self.popup_refresh_func:
       self.popup_refresh_func()
-
-  def log_to_interface(self, message):
-    self.after(0, self._safe_append_log, message)
-
-  def _safe_append_log(self, message):
-    self.txt_log.insert(tk.END, f"{message}\n")
-    self.txt_log.see(tk.END)
 
   def on_server_received(self, data: dict):
     self.uid = data.get("uid", "")
@@ -407,6 +427,14 @@ class App(tk.Tk):
     self.ent_ua.delete(0, tk.END)
     self.ent_ua.insert(0, self.user_agent)
 
+    # Cập nhật lại danh sách nhóm từ file JSON nếu có
+    self.groups_data = self.load_data()
+    self.update_group_selection()
+
+    if self.uid:
+        self.has_uid = True
+        self.save_to_profile_folder(self.uid, self.cookies)
+
   def scan_groups(self):
     uid = self.ent_uid_shared.get()
 
@@ -416,56 +444,44 @@ class App(tk.Tk):
     selenium_thread.start()
 
   def run_scan_groups(self, user) -> None:
+    worker = None
     try:
-      worker = bot.FacebookBot()
-      worker.login_with_cookies(user, self.cookies)
-      results = worker.scrape_joined_groups()
+        worker = bot.FacebookBot(visualize=self.is_demo_mode)
+        # worker.login_with_cookies(user, self.cookies)
+        success = worker.start_browser(
+            uid=user, user_agent=self.user_agent
+        )
+        if not success:
+          self.after(0, lambda: messagebox.showerror("Lỗi", "Đăng nhập thất bại!"))
+          return
+        
+        results = worker.scrape_joined_groups()
 
-      self.groups_data = []
-      for group in results:
-        self.groups_data.append({
-            "id": group.get("group_id", ""),
-            "name": group.get("group_name", ""),
-            "checked": False,
-        })
+        # 1. Chuyển đổi dữ liệu bằng List Comprehension
+        self.groups_data = [
+            {
+                "id": g.get("group_id", ""),
+                "name": g.get("group_name", ""),
+                "checked": False,
+            }
+            for g in (results or [])
+        ]
 
-      file_path = "groups_saved.json"
-      new_data_entry = {user: {"groups": self.groups_data}}
+        # 2. Tái sử dụng hàm lưu file JSON đã viết trước đó
+        self.save_data()
+        print("Hoàn thành cào dữ liệu ngầm và lưu JSON thành công!")
 
-      full_json_data = []
-      if os.path.exists(file_path):
-        try:
-          with open(file_path, "r", encoding="utf-8") as f:
-            full_json_data = json.load(f)
-            if not isinstance(full_json_data, list):
-              full_json_data = []
-        except Exception:
-          full_json_data = []
-
-      updated = False
-      for item in full_json_data:
-        if user in item:
-          item[user]["groups"] = self.groups_data
-          updated = True
-          break
-
-      if not updated:
-        full_json_data.append(new_data_entry)
-
-      with open(file_path, "w", encoding="utf-8") as f:
-        json.dump(full_json_data, f, ensure_ascii=False, indent=4)
-
-      print("Hoàn thành cào dữ liệu ngầm và lưu JSON thành công!")
-
-      if hasattr(self, "_trigger_ui_refresh") and self._trigger_ui_refresh:
-        self.after(0, self._trigger_ui_refresh)
+        # 3. Cập nhật lại giao diện ở main thread
+        if callable(getattr(self, "_trigger_ui_refresh", None)):
+            self.after(0, self._trigger_ui_refresh)
 
     except Exception as e:
-      msg = f"Có lỗi xảy ra: {e}"
-      self.after(0, lambda: messagebox.showerror("Lỗi Tiến Trình", msg))
+        msg = f"Có lỗi xảy ra: {e}"
+        self.after(0, lambda: messagebox.showerror("Lỗi Tiến Trình", msg))
+
     finally:
-      if "worker" in locals():
-        worker.close()
+        if worker:
+            worker.close()
 
 
 if __name__ == "__main__":

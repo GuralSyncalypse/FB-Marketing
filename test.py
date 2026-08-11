@@ -1329,6 +1329,28 @@ class FacebookBot:
                 time.sleep(5)
         
 
+    def save_raw_get_response(
+        self,
+        group_url=None,
+        output_file="raw_facebook_response.html",
+    ):
+        """Mở URL và lưu toàn bộ Response HTML/JS thô từ GET request vào file."""
+        if not group_url:
+            return
+
+        # Điều hướng Selenium tới URL (thực hiện yêu cầu GET)
+        self.driver.get(group_url)
+
+        # Lấy toàn bộ mã nguồn nhận được
+        raw_source = self.driver.page_source
+
+        # Ghi nguyên văn ra file HTML
+        with open(output_file, "w", encoding="utf-8") as f:
+            f.write(raw_source)
+
+        print(
+            f"[+] Đã lưu toàn bộ response thô ({len(raw_source)} ký tự) vào file: {output_file}"
+        )
 
 
 def create_excel_file(data, headers, filename="results.xlsx"):
@@ -1367,74 +1389,10 @@ def main():
     bot = FacebookBot(email, password)
     bot.ensure_login()
 
-
-    bot.driver.get("https://www.facebook.com/groups/2396395143940094/members/")
     time.sleep(3)
 
-    # Xóa file data.json cũ (nếu muốn làm sạch dữ liệu từ lần chạy trước)
-    # if os.path.exists("data.json"):
-    #     os.remove("data.json")
+    bot.save_raw_get_response("https://www.facebook.com/groups/1646194296163406/members")
 
-    # total_count = 0
-
-    # # Mở file chứa thông tin member đã lọc
-    # with open("members_cleaned.jsonl", "a", encoding="utf-8") as f_out:
-    #     cursor = None
-    #     has_next_page = True
-    #     request_index = 1
-
-    #     while has_next_page:
-    #         print(f"[*] Đang gửi Request #{request_index} (Cursor: {cursor})...")
-            
-    #         # 1. Gọi GraphQL Request
-    #         raw_res = bot.fetch_group_members_selenium(group_id, cursor=cursor, count=30)
-            
-    #         # 2. LƯU RAW RESPONSE RA FILE DATA.JSON ĐỂ KIỂM TRA
-    #         bot.log_raw_response(raw_res, filename="data.json")
-    #         print(f"    -> Đã ghi log response #{request_index} vào data.json")
-
-    #         # 3. Kiểm tra lỗi nếu request thất bại
-    #         if "error" in raw_res or "data" not in raw_res:
-    #             print(f"[!] Dừng do lỗi: {raw_res.get('error')}")
-    #             break
-
-    #         node = raw_res.get("data", {}).get("node", {}).get("new_members", {})
-    #         edges = node.get("edges", [])
-
-    #         if not edges:
-    #             print("Không còn dữ liệu trả về.")
-    #             break
-
-    #         # 4. Trích xuất dữ liệu sạch
-    #         for edge in edges:
-    #             m = edge.get("node", {})
-    #             member_data = {
-    #                 "id": m.get("id"),
-    #                 "name": m.get("name"),
-    #                 "url": m.get("url"),
-    #                 "avatar": m.get("profile_picture", {}).get("uri")
-    #             }
-    #             f_out.write(json.dumps(member_data, ensure_ascii=False) + "\n")
-    #             total_count += 1
-
-    #         # 5. Lấy cursor cho request tiếp theo
-    #         page_info = node.get("page_info", {})
-    #         has_next_page = page_info.get("has_next_page", False)
-    #         cursor = page_info.get("end_cursor")
-
-    #         if not cursor:
-    #             break
-
-    #         request_index += 1
-    #         time.sleep(2.5)  # Nghỉ giữa các request
-
-    # print(f"\n[Hoàn thành] Tổng cộng lấy được {total_count} members. Xem toàn bộ response thô tại data.json.")
-
-    members = bot.scrape_group_members(group_id, max_members=50, batch_size=rand.randint(10, 30), start_cursor="AQHSo8gZxCBpYYJzqHZaYlAtNq44P0OocJDR5VlzYEN7nbLRyM1cXES6jKfRqMaJ3lwgYXTCy8oYAnvhKSSTIjtzaQ")
-
-    print(f"Tổng số UID thực tế cào được: {len(members)}")
-
-    input("Press Enter to continue...")
     bot.close()
 
     end = time.perf_counter()

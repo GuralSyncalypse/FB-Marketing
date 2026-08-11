@@ -166,8 +166,10 @@ class PostScreen(tk.Frame):
             driver = bot.FacebookBot(self.controller.is_demo_mode)
             driver.user_agent = self.controller.user_agent
 
-            if not driver.login_with_cookies(uid, self.controller.cookies):
-                raise Exception("Không thể đăng nhập bằng cookies hiện tại.")
+            success = driver.start_browser(uid, user_agent=self.controller.get_user_agent())
+            if not success:
+                self.after(0, lambda: messagebox.showerror("Lỗi", "Đăng nhập thất bại!"))
+                return
 
             total_groups = len(selected_groups)
             success_count = 0
