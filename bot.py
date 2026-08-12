@@ -344,8 +344,7 @@ class FacebookBot:
     # --
     def log_raw_response(self, res_data: dict, filename: str = "data.jsonl"):
         """
-        Ghi nối tiếp (Append) từng raw response thành 1 dòng JSON độc lập.
-        Cực nhanh, tốn rất ít RAM và an toàn tuyệt đối khi bị crash.
+        Log request GraphQL
         """
         with open(filename, "a", encoding="utf-8") as f:
             f.write(json.dumps(res_data, ensure_ascii=False) + "\n")
@@ -557,6 +556,7 @@ class FacebookBot:
         unlimited = max_members <= 0
         limit_text = "TẤT CẢ" if unlimited else f"{max_members}"
 
+        file_name = group_id + '.jsonl'
         for key, value in payload.items():
             if self.is_stopped():
                 break
@@ -581,7 +581,7 @@ class FacebookBot:
                 while attempt < retries and not self.is_stopped():
                     attempt += 1
                     raw_res = self.fetch_group_members(group_id, cursor=cursor, count=batch_size, doc_id=value['doc_id'], friendly_name=value['friendly_name'])
-                    self.log_raw_response(raw_res, filename="data.jsonl")
+                    self.log_raw_response(raw_res, filename="requests_log.jsonl")
 
                     # 1. Xử lý an toàn chống NoneType/Null
                     data = raw_res.get("data") if isinstance(raw_res, dict) else None
@@ -621,22 +621,53 @@ class FacebookBot:
                     m = edge.get("node", {})
                     uid = m.get("id")
 
+                    bio_data = m.get("bio_text") or {}
+                    profile_pic = m.get("profile_picture") or {}
+                    group_mem = m.get("group_membership") or {}
+                    contrib_score = group_mem.get("group_contribution_score_text") or {}
+
+                    # Lấy thông tin gia nhập từ cấp edge (cùng cấp với node/cursor)
+                    join_status = edge.get("join_status_text") or {}
+                    ranges = join_status.get("ranges") or []
+                    added_by_entity = ranges[0].get("entity", {}) if ranges else {}
+
+                    # Lấy trạng thái kết bạn
+                    user_renderer = (m.get("user_type_renderer") or {}).get("user") or {}
+
                     if uid and uid not in collected_uids:
                         collected_uids.add(uid)
                         
                         member_info = {
-                            "id": uid,
+                            "id": m.get("id"),
                             "name": m.get("name"),
                             "url": m.get("url"),
-                            "avatar": m.get("profile_picture", {}).get("uri"),
-                            "cursor": cursor
+                            "avatar": profile_pic.get("uri"),
+
+                            # 1. Thông tin cá nhân chi tiết
+                            "bio": bio_data.get("text"),
+                            "follower_count": m.get("follower_count"),
+                            "is_verified": m.get("is_verified"),
+                            "category": m.get("profile_plus_category_display_name"),
+
+                            # 2. Hoạt động & Đóng góp trong nhóm
+                            "contribution_score": contrib_score.get("text"),
+                            "membership_id": group_mem.get("id"),
+
+                            # 3. Lịch sử tham gia & Người giới thiệu
+                            "join_status_text": join_status.get("text"),
+                            "added_by_id": added_by_entity.get("id"),
+                            "added_by_name": added_by_entity.get("short_name"),
+                            "added_by_url": added_by_entity.get("url"),
+
+                            # 4. Trạng thái tương tác
+                            "subscribe_status": m.get("subscribe_status"),
+                            "friendship_status": user_renderer.get("friendship_status")
                         }
                         self._buffer.append(member_info)
 
                         if not unlimited and len(collected_uids) >= max_members:
                             break
-
-                file_name = group_id + '.jsonl'
+                
                 self._flush(file_name)  # Ghi batch ra file jsonl
 
                 if not unlimited and len(collected_uids) >= max_members:

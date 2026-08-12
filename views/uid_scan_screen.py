@@ -1,15 +1,10 @@
 import json
 import time
 import tkinter as tk
+import os
 from tkinter import ttk, messagebox
 import threading
 import bot  # Import module bot chứa FacebookBot
-
-SPEED_MAP = {
-    "Nhanh (1.5s)": 1.5,
-    "Vừa phải (2.5s)": 2.5,
-    "An toàn (4.0s)": 4.0
-}
 
 class UidScanScreen(tk.Frame):
     def __init__(self, parent, controller):
@@ -147,11 +142,6 @@ class UidScanScreen(tk.Frame):
 
         self.refresh_groups_preview()
 
-    def get_selected_speed(self) -> float:
-        selected_text = self.cbo_speed_var.get()
-        # Trả về số giây tương ứng, mặc định là 2.5s nếu không tìm thấy
-        return SPEED_MAP.get(selected_text, 2.5)
-
     def get_source_groups(self):
         groups = getattr(self.controller, "groups_data", []) or []
         if self.chk_only_selected_var.get():
@@ -199,11 +189,29 @@ class UidScanScreen(tk.Frame):
     # LOGIC CHẠY TỰ ĐỘNG VỚI SELENIUM THREADING
     # =========================================================================
 
-    def handle_save_batch(self, batch_data, file_name=None):
-        """Hàm lưu dữ liệu"""
-        print(f"--> [MAIN] Đang ghi batch {len(batch_data)} bản ghi vào file...")
+    def handle_save_batch(self, batch_data, file_name="output.jsonl", folder_path="data"):
+        """
+        Hàm lưu dữ liệu vào thư mục chỉ định.
+        Tự động tạo thư mục nếu chưa có.
+        """
+        if not batch_data:
+            return
 
-        with open(file_name, "a", encoding="utf-8") as f:
+        # 1. Ghép đường dẫn file với thư mục
+        if folder_path:
+            full_path = os.path.join(folder_path, file_name)
+        else:
+            full_path = file_name
+
+        # 2. Tạo thư mục cha (nếu chưa tồn tại)
+        dir_name = os.path.dirname(full_path)
+        if dir_name:
+            os.makedirs(dir_name, exist_ok=True)
+
+        print(f"--> [MAIN] Đang ghi batch {len(batch_data)} bản ghi vào {full_path}...")
+
+        # 3. Ghi dữ liệu vào file
+        with open(full_path, "a", encoding="utf-8") as f:
             for item in batch_data:
                 f.write(json.dumps(item, ensure_ascii=False) + "\n")
 

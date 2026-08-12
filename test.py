@@ -1335,6 +1335,33 @@ class FacebookBot:
         output_file="raw_facebook_response.html",
     ):
         """Mở URL và lưu toàn bộ Response HTML/JS thô từ GET request vào file."""
+        def find_member_data_script(html_source: str) -> dict | None:
+                """Quét HTML page_source để lọc ra đúng JSON chứa danh sách thành viên nhóm.
+                """
+                soup = BeautifulSoup(html_source, "html.parser")
+        
+                # 1. Lọc tất cả các thẻ script có type="application/json"
+                json_scripts = soup.find_all("script", {"type": "application/json"})
+        
+                for script in json_scripts:
+                    content = script.string
+                    if not content:
+                        continue
+        
+                    # 2. Kiểm tra các từ khóa đặc trưng của Relay GraphQL Member Data
+                    if (
+                        "RelayPrefetchedStreamCache" in content
+                        and "group_member_profiles" in content
+                    ):
+                        try:
+                            # Parse nội dung thẻ script thành Python Dictionary
+                            data = json.loads(content)
+                            return data
+                        except json.JSONDecodeError:
+                            continue
+        
+                return None
+
         if not group_url:
             return
 
@@ -1351,6 +1378,53 @@ class FacebookBot:
         print(
             f"[+] Đã lưu toàn bộ response thô ({len(raw_source)} ký tự) vào file: {output_file}"
         )
+
+        return find_member_data_script(raw_source)
+
+    def extract_and_save_member_json(
+        self, output_file="group_members_raw.json"
+    ) -> bool:
+        """Lọc thẻ <script> chứa dữ liệu Relay GraphQL từ self.driver và xuất ra
+
+        file .json.
+        """
+        html_source = self.driver.page_source
+        soup = BeautifulSoup(html_source, "html.parser")
+
+        # Lọc các thẻ script có type application/json
+        scripts = soup.find_all("script", {"type": "application/json"})
+
+        target_json = None
+        for script in scripts:
+            content = script.string
+            if (
+                content
+                and "all_active_members" in content
+                and "paginated_member_sections" in content
+                and "admin_and_moderator_profiles" in content
+            ):
+                try:
+                    target_json = json.loads(content)
+                    break
+                except json.JSONDecodeError:
+                    continue
+
+        if target_json:
+            # Ghi ra file .json định dạng đàng hoàng để đọc/inspect
+            with open(output_file, "w", encoding="utf-8") as f:
+                json.dump(target_json, f, ensure_ascii=False, indent=4)
+
+            print(
+                f"[+] Đã bóc tách dữ liệu JSON thành công! Đã lưu vào file: {output_file}"
+            )
+            return True
+
+        print(
+            "[!] Không tìm thấy thẻ <script> chứa dữ liệu thành viên trong trang hiện tại."
+        )
+        return False
+
+    
 
 
 def create_excel_file(data, headers, filename="results.xlsx"):
@@ -1391,8 +1465,8 @@ def main():
 
     time.sleep(3)
 
-    bot.save_raw_get_response("https://www.facebook.com/groups/1646194296163406/members")
-
+    data = bot.save_raw_get_response("https://www.facebook.com/groups/1646194296163406/members")
+    bot.extract_and_save_member_json()
     bot.close()
 
     end = time.perf_counter()

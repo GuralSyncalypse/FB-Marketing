@@ -5,6 +5,9 @@
 *.py[cod]
 *$py.class
 *.pyc
+*.jsonl
+*.json
+*.pkl
 
 # Virtual environments
 .venv/
