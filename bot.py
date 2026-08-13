@@ -256,6 +256,39 @@ class FacebookBot:
                 version_main=150
             )
 
+        # 3. TIÊM GIẢ LẬP CLIENT HINTS (VÁ LỖI HEADERS BỊ BẮT BOT)
+        try:
+            self.driver.execute_cdp_cmd(
+                "Network.setUserAgentOverride",
+                {
+                    "userAgent": ua
+                    or "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36",
+                    "acceptLanguage": "en-US,en;q=0.9",
+                    "platform": "Windows",
+                    "userAgentMetadata": {
+                        "brands": [
+                            {"brand": "Not=A?Brand", "version": "99"},
+                            {"brand": "Google Chrome", "version": "151"},
+                            {"brand": "Chromium", "version": "151"},
+                        ],
+                        "fullVersionList": [
+                            {"brand": "Not=A?Brand", "version": "99.0.0.0"},
+                            {"brand": "Google Chrome", "version": "151.0.7922.109"},
+                            {"brand": "Chromium", "version": "151.0.7922.109"},
+                        ],
+                        "fullVersion": "151.0.7922.109",
+                        "platform": "Windows",
+                        "platformVersion": "10.0.0",
+                        "architecture": "x86",
+                        "model": "",
+                        "mobile": False,
+                        "bitness": "64",
+                    },
+                },
+            )
+        except Exception as e:
+            print(f"[{uid}] Warning: Không thể tiêm CDP Client Hints: {e}")
+
         # 4. MỞ TRANG VÀ GỌI HÀM CON NẠP COOKIE (NẾU CẦN)
         self.driver.get("https://www.facebook.com")
         time.sleep(2)
@@ -383,40 +416,28 @@ class FacebookBot:
             const docId = arguments[3];
             const friendlyName = arguments[4];
 
-            // 1. BỌC TRY...CATCH TOÀN BỘ ĐỂ ĐẢM BẢO LUÔN GỌI DONE() KHÔNG BỊ TRANG THÁI HẰNG
             try {
-                // 2. TẠO ABORT CONTROLLER ĐỂ HỦY FETCH KHI TIMEOUT
                 const controller = new AbortController();
                 const timeoutId = setTimeout(() => {
                     controller.abort();
                     done({ error: "JS_FETCH_TIMEOUT" });
                 }, 10000);
 
-                // 3. LẤY DTSG TOKEN AN TOÀN
-                let dtsgToken = "";
-                try {
-                    dtsgToken = (window.require && require('DTSGInitialData') && require('DTSGInitialData').token) || 
-                                (window.require && require('DTSGInitData') && require('DTSGInitData').token) || "";
-                } catch(e) {}
+                // 1. LẤY CÁC TOKEN BẢO MẬT (DTSG, USER_ID, LSD)
+                let dtsgToken = "", userId = "", lsdToken = "";
+                
+                try { dtsgToken = (window.require && require('DTSGInitialData').token) || ""; } catch(e){}
+                try { userId = (window.require && require('CurrentUserInitialData').USER_ID) || ""; } catch(e){}
+                try { lsdToken = (window.require && require('LSD').token) || ""; } catch(e){}
 
+                // Fallback qua Cookie nếu thiếu
                 if (!dtsgToken) {
-                    try {
-                        const match = document.cookie.match(/fb_dtsg=([^;]+)/);
-                        if (match) dtsgToken = decodeURIComponent(match[1]);
-                    } catch(e) {}
+                    const m = document.cookie.match(/fb_dtsg=([^;]+)/);
+                    if (m) dtsgToken = decodeURIComponent(m[1]);
                 }
-
-                // 4. LẤY USER ID AN TOÀN
-                let userId = "";
-                try {
-                    userId = (window.require && require('CurrentUserInitialData') && require('CurrentUserInitialData').USER_ID) || "";
-                } catch(e) {}
-
                 if (!userId) {
-                    try {
-                        const match = document.cookie.match(/c_user=([0-9]+)/);
-                        if (match) userId = match[1];
-                    } catch(e) {}
+                    const m = document.cookie.match(/c_user=([0-9]+)/);
+                    if (m) userId = m[1];
                 }
 
                 if (!dtsgToken || !userId) {
@@ -424,22 +445,26 @@ class FacebookBot:
                     return done({ error: "MISSING_AUTH_TOKENS" });
                 }
 
-                // 5. TÍNH JAZOEST TỪ DTSG TOKEN (TRÁNH CƠ CHẾ BẮT BOT CỦA FB)
-                let jazoest = "";
-                if (dtsgToken) {
-                    let sum = 0;
-                    for (let i = 0; i < dtsgToken.length; i++) {
-                        sum += dtsgToken.charCodeAt(i);
-                    }
-                    jazoest = '2' + sum;
-                }
+                // 2. TÍNH JAZOEST
+                let sum = 0;
+                for (let i = 0; i < dtsgToken.length; i++) sum += dtsgToken.charCodeAt(i);
+                const jazoest = '2' + sum;
 
-                const payload = new URLSearchParams({
+                // 3. TỰ ĐỘNG LẤY TELEMETRY TỪ WINDOW (NẾU CÓ) ĐỂ TĂNG CONTENT-LENGTH LÊN 3000+ BYTES
+                let rev = "", spinT = "";
+                try { rev = (window.SiteData && window.SiteData.client_revision) || ""; } catch(e){}
+                try { spinT = (window.Env && window.Env.start_time) || ""; } catch(e){}
+
+                // 4. XÂY DỰNG PAYLOAD HOÀN CHỈNH
+                const payloadMap = {
                     'av': userId,
                     '__user': userId,
                     'fb_dtsg': dtsgToken,
                     'jazoest': jazoest,
+                    'lsd': lsdToken,
+                    'fb_api_caller_class': 'RelayModern',
                     'fb_api_req_friendly_name': friendlyName,
+                    'server_timestamps': 'true',
                     'doc_id': docId,
                     'variables': JSON.stringify({
                         'count': count,
@@ -451,12 +476,22 @@ class FacebookBot:
                     }),
                     '__a': '1',
                     '__comet_req': '15'
-                });
+                };
 
-                // 6. THỰC THI FETCH VỚI ABORT SIGNAL
+                if (rev) payloadMap['__rev'] = rev;
+                if (spinT) payloadMap['__spin_t'] = spinT;
+
+                const payload = new URLSearchParams(payloadMap);
+
+                // 5. GỬI FETCH CÓ CHỨA CÁC CUSTOM HEADERS X-
                 fetch('https://www.facebook.com/api/graphql/', {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    headers: { 
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                        'X-Asbd-Id': '359341',
+                        'X-Fb-Friendly-Name': friendlyName,
+                        'X-Fb-Lsd': lsdToken
+                    },
                     body: payload.toString(),
                     credentials: 'include',
                     signal: controller.signal
@@ -465,21 +500,18 @@ class FacebookBot:
                     clearTimeout(timeoutId);
                     const text = await res.text();
                     try {
-                        const data = JSON.parse(text);
-                        done(data);
+                        done(JSON.parse(text));
                     } catch(jsonErr) {
-                        // Nếu phản hồi là HTML (Checkpoint / Bị Block)
                         done({ error: "INVALID_JSON_RESPONSE", raw: text.substring(0, 300) });
                     }
                 })
                 .catch(err => {
                     clearTimeout(timeoutId);
-                    if (err.name === 'AbortError') return; // Đã xử lý ở setTimeout
+                    if (err.name === 'AbortError') return;
                     done({ error: err.toString() });
                 });
 
             } catch(topErr) {
-                // Đảm bảo nếu có lỗi bất ngờ xảy ra vẫn trả về cho Selenium
                 done({ error: "CRITICAL_JS_ERROR: " + topErr.toString() });
             }
         """
