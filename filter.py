@@ -1,157 +1,97 @@
 import json
 import os
 import pandas as pd
+import re
 
-def convert_json_file_to_spreadsheet(json_filepath, output_file="facebook_users.xlsx", join_details=True):
+def convert_to_spreadsheet(json_filepath, output_file="facebook_users.xlsx"):
     """
-    Đọc file .json hoặc .jsonl từ ổ đĩa và chuyển đổi sang file Excel (.xlsx) hoặc CSV (.csv).
+    Đọc file .json hoặc .jsonl và chuyển đổi sang file Excel (.xlsx) hoặc CSV (.csv).
     """
+
+    def parse_contribution_score(score_str):
+        """Trích xuất số từ chuỗi contribution_score, mặc định là 0 nếu null hoặc rỗng."""
+        if not score_str:
+            return 0
+        match = re.search(r'\d+', str(score_str))
+        return int(match.group()) if match else 0
+
+    def parse_boolean_status(status_str, positive_value):
+        """
+        Chuyển đổi trạng thái text sang Boolean:
+        - Nếu đúng positive_value -> True
+        - Nếu null / None / rỗng -> None (Để trống trong Excel/CSV)
+        - Nếu là trạng thái ngược lại -> False
+        """
+        if status_str is None or status_str == "":
+            return None
+        elif status_str == positive_value:
+            return True
+        return False
+
     if not os.path.exists(json_filepath):
         print(f"Lỗi: Không tìm thấy file '{json_filepath}'")
         return
 
-    processed_rows = []
+    items = []
 
-    # 2. Đọc file theo đúng định dạng (.jsonl đọc từng dòng, .json đọc toàn bộ)
+    # 1. Đọc file .json / .jsonl
     with open(json_filepath, 'r', encoding='utf-8') as f:
         if json_filepath.endswith('.jsonl'):
-            data = (json.loads(line) for line in f if line.strip())
+            items = [json.loads(line) for line in f if line.strip()]
         else:
             data = json.load(f)
+            items = data if isinstance(data, list) else [data]
 
-        # 3. Xử lý từng đối tượng
-        for item in data:
-            row = {
-                "user_id": f"'{str(item.get('user_id', ''))}",
-                "name": item.get("name", ""),
-                "link": item.get("link", ""),
-                "avatar": item.get("avatar", "")
-            }
+    processed_rows = []
+
+    # 2. Xử lý từng đối tượng
+    for item in items:
+        row = {
+            "user_id": str(item.get("id") or item.get("user_id") or ""),
+            "name": item.get("name", ""),
+            "url": item.get("url") or item.get("link") or "",
+            "avatar": item.get("avatar", ""),
+            "bio": item.get("bio", ""),
+            "follower_count": item.get("follower_count", 0),
+            "is_verified": item.get("is_verified", False),
+            "category": item.get("category", ""),
             
-            details = item.get("details", [])
+            # Các trường xử lý đặc biệt
+            "contribution_score": parse_contribution_score(item.get("contribution_score")),
+            "friendship_status": parse_boolean_status(item.get("friendship_status"), "CAN_REQUEST"),
+            "subscribe_status": parse_boolean_status(item.get("subscribe_status"), "CAN_SUBSCRIBE"),
             
-            if join_details:
-                row["details"] = " | ".join(details)
-            else:
-                for idx, detail in enumerate(details, start=1):
-                    row[f"detail_{idx}"] = detail
+            "membership_id": str(item.get("membership_id") or ""),
+            "join_status_text": item.get("join_status_text", ""),
+            "added_by_id": str(item.get("added_by_id") or ""),
+            "added_by_name": item.get("added_by_name", ""),
+            "added_by_url": item.get("added_by_url", "")
+        }
 
-            processed_rows.append(row)
+        processed_rows.append(row)
 
-    # 4. Xuất ra DataFrame và lưu file
+    # 3. Xuất ra DataFrame & Lưu file
     df = pd.DataFrame(processed_rows)
 
     if output_file.endswith(".csv"):
-        df.to_csv(output_file, index=False, encoding="utf-8-sig")
+        # na_rep="" đảm bảo các giá trị None/null ghi ra CSV dạng ô trống
+        df.to_csv(output_file, index=False, encoding="utf-8-sig", na_rep="")
     elif output_file.endswith(".xlsx"):
-        df.to_excel(output_file, index=False)
+        df.to_excel(output_file, index=False, engine="openpyxl")
     else:
         raise ValueError("Định dạng file không hỗ trợ. Vui lòng chọn .xlsx hoặc .csv")
 
-    print(f"Đã chuyển đổi thành công từ '{json_filepath}' sang '{output_file}'!")
-
-    
-
-def filter_members(input_file="users.json"):
-    """
-    Đọc file JSON dữ liệu thô và lọc dựa trên KHỚP CHUỖI CHÍNH XÁC (Case-sensitive exact match)
-    """
-    if not os.path.exists(input_file):
-        print(f"❌ File '{input_file}' không tồn tại. Vui lòng kiểm tra lại đường dẫn!")
-        return
-
-    with open(input_file, "r", encoding="utf-8") as f:
-        try:
-            raw_data = json.load(f)
-        except json.JSONDecodeError:
-            print(f"❌ File '{input_file}' bị lỗi định dạng JSON!")
-            return
-
-    valid_members = []
-    admins_mods = []
-    junk_accounts = []
-
-    # 🎯 Tập hợp các chuỗi ĐÍCH DANH (Phân biệt chính xác chữ hoa / chữ thường)
-    # Chỉ nhận đúng các kiểu viết này, không nhận kiểu khác
-    exact_admin_keywords = {
-        "Admin", 
-        "admin",
-        "Quản trị viên", 
-        "quản trị viên",
-        "Người kiểm duyệt", 
-        "người kiểm duyệt",
-        "Chuyên gia nhóm", 
-        "chuyên gia nhóm",
-        "Moderator", 
-        "moderator"
-    }
-
-    for item in raw_data:
-        name = item.get("name", "").strip()
-        user_id = item.get("user_id", "").strip()
-        avatar = item.get("avatar", "").strip()
-
-        # 1. Tiêu chí Lọc Nick Rác / Clone / Lỗi data
-        if not avatar or not name or not user_id:
-            item["filter_reason"] = "Thiếu Avatar hoặc Thông tin cá nhân"
-            junk_accounts.append(item)
-            continue
-
-        # 2. Tiêu chí Lọc Ban Quản Trị: Khớp chính xác 100% chuỗi từng dòng trong details
-        details_lines = [line.strip() for line in item.get("details", [])]
-        
-        # Kiểm tra xem có bất kỳ dòng nào khớp đúng 1 trong các từ khóa trong exact_admin_keywords hay không
-        is_admin = any(line in exact_admin_keywords for line in details_lines)
-
-        if is_admin:
-            admins_mods.append(item)
-            continue
-
-        # 3. Thành viên bình thường đạt chuẩn
-        valid_members.append(item)
-
-    # Export các danh sách ra file riêng biệt
-    files_to_save = {
-        "valid_members.json": valid_members,
-        "admins_mods.json": admins_mods,
-        "junk_accounts.json": junk_accounts
-    }
-
-    for filename, data in files_to_save.items():
-        with open(filename, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=4)
-
-    # In báo cáo thống kê
-    total = len(raw_data)
-    print("=" * 50)
-    print("📊 BÁO CÁO KẾT QUẢ LỌC DỮ LIỆU")
-    print("=" * 50)
-    print(f"📥 Tổng số record ban đầu:  {total}")
-    print(f"✅ Thành viên chuẩn (Valid): {len(valid_members)} ({len(valid_members)/total*100:.1f}%)")
-    print(f"🛡️ Quản trị viên/Admin:     {len(admins_mods)} ({len(admins_mods)/total*100:.1f}%)")
-    print(f"🗑️ Nick rác/Clone lọc bỏ:  {len(junk_accounts)} ({len(junk_accounts)/total*100:.1f}%)")
-    print("=" * 50)
+    print(f"Đã chuyển đổi thành công {len(df)} dòng từ '{json_filepath}' sang '{output_file}'!")
 
 # ==========================================
 # CÁCH SỬ DỤNG HÀM
 # ==========================================
 if __name__ == "__main__":
-    #filter_members("users_group_KillingFloorClanESP.json")
-
-
     # Thay 'du_lieu.json' bằng đường dẫn file .json thực tế trên máy của bạn
-    file_json_dau_vao = "output_KillingFloorClanESP.json" 
+    file_json_dau_vao = "data/679011295472431.jsonl" 
 
     # 1. Đọc file JSON và xuất ra file Excel
-    convert_json_file_to_spreadsheet(
+    convert_to_spreadsheet(
         json_filepath=file_json_dau_vao, 
-        output_file="ket_qua.xlsx", 
-        join_details=True
+        output_file="ket_qua.xlsx"
     )
-
-    # 2. Đọc file JSON và xuất ra file CSV (Tách details thành các cột riêng)
-    # convert_json_file_to_spreadsheet(
-    #     json_filepath=file_json_dau_vao, 
-    #     output_file="ket_qua.csv", 
-    #     join_details=False
-    # )

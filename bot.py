@@ -21,53 +21,84 @@ import pandas as pd
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__)) # Thư mục /app
 
-def convert_json_file_to_spreadsheet(json_filepath, output_file="facebook_users.xlsx", join_details=True):
+def convert_to_spreadsheet(json_filepath, output_file="facebook_users.xlsx"):
     """
-    Đọc file .json hoặc .jsonl từ ổ đĩa và chuyển đổi sang file Excel (.xlsx) hoặc CSV (.csv).
+    Đọc file .json hoặc .jsonl và chuyển đổi sang file Excel (.xlsx) hoặc CSV (.csv).
     """
+    def parse_contribution_score(score_str):
+        """Trích xuất số từ chuỗi contribution_score, mặc định là 0 nếu null hoặc rỗng."""
+        if not score_str:
+            return 0
+        match = re.search(r'\d+', str(score_str))
+        return int(match.group()) if match else 0
+
+    def parse_boolean_status(status_str, positive_value):
+        """
+        Chuyển đổi trạng thái text sang Boolean:
+        - Nếu đúng positive_value -> True
+        - Nếu null / None / rỗng -> None (Để trống trong Excel/CSV)
+        - Nếu là trạng thái ngược lại -> False
+        """
+        if status_str is None or status_str == "":
+            return None
+        elif status_str == positive_value:
+            return True
+        return False
+
     if not os.path.exists(json_filepath):
         print(f"Lỗi: Không tìm thấy file '{json_filepath}'")
         return
 
-    processed_rows = []
+    items = []
 
-    # 2. Đọc file theo đúng định dạng (.jsonl đọc từng dòng, .json đọc toàn bộ)
+    # 1. Đọc file .json / .jsonl
     with open(json_filepath, 'r', encoding='utf-8') as f:
         if json_filepath.endswith('.jsonl'):
-            data = (json.loads(line) for line in f if line.strip())
+            items = [json.loads(line) for line in f if line.strip()]
         else:
             data = json.load(f)
+            items = data if isinstance(data, list) else [data]
 
-        # 3. Xử lý từng đối tượng
-        for item in data:
-            row = {
-                "user_id": f"'{str(item.get('user_id', ''))}",
-                "name": item.get("name", ""),
-                "link": item.get("link", ""),
-                "avatar": item.get("avatar", "")
-            }
+    processed_rows = []
+
+    # 2. Xử lý từng đối tượng
+    for item in items:
+        row = {
+            "user_id": str(item.get("id") or item.get("user_id") or ""),
+            "name": item.get("name", ""),
+            "url": item.get("url") or item.get("link") or "",
+            "avatar": item.get("avatar", ""),
+            "bio": item.get("bio", ""),
+            "follower_count": item.get("follower_count", 0),
+            "is_verified": item.get("is_verified", False),
+            "category": item.get("category", ""),
             
-            details = item.get("details", [])
+            # Các trường xử lý đặc biệt
+            "contribution_score": parse_contribution_score(item.get("contribution_score")),
+            "friendship_status": parse_boolean_status(item.get("friendship_status"), "CAN_REQUEST"),
+            "subscribe_status": parse_boolean_status(item.get("subscribe_status"), "CAN_SUBSCRIBE"),
             
-            if join_details:
-                row["details"] = " | ".join(details)
-            else:
-                for idx, detail in enumerate(details, start=1):
-                    row[f"detail_{idx}"] = detail
+            "membership_id": str(item.get("membership_id") or ""),
+            "join_status_text": item.get("join_status_text", ""),
+            "added_by_id": str(item.get("added_by_id") or ""),
+            "added_by_name": item.get("added_by_name", ""),
+            "added_by_url": item.get("added_by_url", "")
+        }
 
-            processed_rows.append(row)
+        processed_rows.append(row)
 
-    # 4. Xuất ra DataFrame và lưu file
+    # 3. Xuất ra DataFrame & Lưu file
     df = pd.DataFrame(processed_rows)
 
     if output_file.endswith(".csv"):
-        df.to_csv(output_file, index=False, encoding="utf-8-sig")
+        # na_rep="" đảm bảo các giá trị None/null ghi ra CSV dạng ô trống
+        df.to_csv(output_file, index=False, encoding="utf-8-sig", na_rep="")
     elif output_file.endswith(".xlsx"):
-        df.to_excel(output_file, index=False)
+        df.to_excel(output_file, index=False, engine="openpyxl")
     else:
         raise ValueError("Định dạng file không hỗ trợ. Vui lòng chọn .xlsx hoặc .csv")
 
-    print(f"Đã chuyển đổi thành công từ '{json_filepath}' sang '{output_file}'!")
+    print(f"Đã chuyển đổi thành công {len(df)} dòng từ '{json_filepath}' sang '{output_file}'!")
 
 class FacebookBot:
     def __init__(self, visualize=False, output_path="users.json", stop_event=None, on_save_batch=None):
@@ -90,20 +121,6 @@ class FacebookBot:
     def is_stopped(self):
         """Hàm phụ trợ kiểm tra xem người dùng đã bấm nút Dừng hay chưa."""
         return self.stop_event is not None and self.stop_event.is_set()
-
-    def _load_existing_data(self):
-        """Đọc file json cũ nếu có để tránh mất dữ liệu khi cào lại."""
-        if os.path.exists(self.output_path):
-            try:
-                with open(self.output_path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                    print(
-                        f"📂 Tìm thấy file cũ! Đã tải sẵn {len(data)} thành viên."
-                    )
-                    return {item["user_id"]: item for item in data if "user_id" in item}
-            except Exception as e:
-                print(f"⚠️ Lỗi đọc file cũ ({e}), sẽ tạo mới.")
-        return {}
 
     def _save_checkpoint(self):
         """Ghi dữ liệu hiện tại xuống đĩa (Autosave - Ghi đè file mới)."""
@@ -134,7 +151,7 @@ class FacebookBot:
         uid: str,
         user_agent: str = None,
         proxy: str = None,
-        driver_type: str = "standard",
+        driver_type: str = "undetected",
     ) -> bool:
         """Khởi tạo Driver (Standard/UC) tích hợp tối ưu tốc độ, Profile cách ly và nạp Cookie bằng hàm con."""
 
@@ -357,36 +374,49 @@ class FacebookBot:
         doc_id: str = "27114388448203693",
         friendly_name: str = "GroupsCometMembersPageNewMembersSectionRefetchQuery",
     ) -> dict:
-        """Thực thi GraphQL request với doc_id và friendly_name linh hoạt."""
+        """Thực thi GraphQL request với doc_id và friendly_name linh hoạt (An toàn 100% thread)."""
         js_script = """
-                const done = arguments[arguments.length - 1];
-                const groupId = arguments[0];
-                const cursor = arguments[1];
-                const count = arguments[2];
-                const docId = arguments[3];
-                const friendlyName = arguments[4];
+            const done = arguments[arguments.length - 1];
+            const groupId = arguments[0];
+            const cursor = arguments[1];
+            const count = arguments[2];
+            const docId = arguments[3];
+            const friendlyName = arguments[4];
 
-                // 1. Giới hạn thời gian chờ tối đa 10 giây cho request JS
+            // 1. BỌC TRY...CATCH TOÀN BỘ ĐỂ ĐẢM BẢO LUÔN GỌI DONE() KHÔNG BỊ TRANG THÁI HẰNG
+            try {
+                // 2. TẠO ABORT CONTROLLER ĐỂ HỦY FETCH KHI TIMEOUT
+                const controller = new AbortController();
                 const timeoutId = setTimeout(() => {
+                    controller.abort();
                     done({ error: "JS_FETCH_TIMEOUT" });
                 }, 10000);
 
-                // 2. Lấy fb_dtsg token (có fallback qua Cookie)
+                // 3. LẤY DTSG TOKEN AN TOÀN
                 let dtsgToken = "";
                 try {
-                    dtsgToken = require('DTSGInitialData').token || require('DTSGInitData').token;
-                } catch(e) {
-                    const match = document.cookie.match(/fb_dtsg=([^;]+)/);
-                    if (match) dtsgToken = decodeURIComponent(match[1]);
+                    dtsgToken = (window.require && require('DTSGInitialData') && require('DTSGInitialData').token) || 
+                                (window.require && require('DTSGInitData') && require('DTSGInitData').token) || "";
+                } catch(e) {}
+
+                if (!dtsgToken) {
+                    try {
+                        const match = document.cookie.match(/fb_dtsg=([^;]+)/);
+                        if (match) dtsgToken = decodeURIComponent(match[1]);
+                    } catch(e) {}
                 }
 
-                // 3. Lấy User ID (có fallback qua Cookie c_user)
+                // 4. LẤY USER ID AN TOÀN
                 let userId = "";
                 try {
-                    userId = require('CurrentUserInitialData').USER_ID || "";
-                } catch(e) {
-                    const match = document.cookie.match(/c_user=([0-9]+)/);
-                    if (match) userId = match[1];
+                    userId = (window.require && require('CurrentUserInitialData') && require('CurrentUserInitialData').USER_ID) || "";
+                } catch(e) {}
+
+                if (!userId) {
+                    try {
+                        const match = document.cookie.match(/c_user=([0-9]+)/);
+                        if (match) userId = match[1];
+                    } catch(e) {}
                 }
 
                 if (!dtsgToken || !userId) {
@@ -394,10 +424,21 @@ class FacebookBot:
                     return done({ error: "MISSING_AUTH_TOKENS" });
                 }
 
+                // 5. TÍNH JAZOEST TỪ DTSG TOKEN (TRÁNH CƠ CHẾ BẮT BOT CỦA FB)
+                let jazoest = "";
+                if (dtsgToken) {
+                    let sum = 0;
+                    for (let i = 0; i < dtsgToken.length; i++) {
+                        sum += dtsgToken.charCodeAt(i);
+                    }
+                    jazoest = '2' + sum;
+                }
+
                 const payload = new URLSearchParams({
                     'av': userId,
                     '__user': userId,
                     'fb_dtsg': dtsgToken,
+                    'jazoest': jazoest,
                     'fb_api_req_friendly_name': friendlyName,
                     'doc_id': docId,
                     'variables': JSON.stringify({
@@ -412,24 +453,43 @@ class FacebookBot:
                     '__comet_req': '15'
                 });
 
+                // 6. THỰC THI FETCH VỚI ABORT SIGNAL
                 fetch('https://www.facebook.com/api/graphql/', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
                     body: payload.toString(),
-                    credentials: 'include'
+                    credentials: 'include',
+                    signal: controller.signal
                 })
-                .then(res => res.json())
-                .then(data => {
+                .then(async res => {
                     clearTimeout(timeoutId);
-                    done(data);
+                    const text = await res.text();
+                    try {
+                        const data = JSON.parse(text);
+                        done(data);
+                    } catch(jsonErr) {
+                        // Nếu phản hồi là HTML (Checkpoint / Bị Block)
+                        done({ error: "INVALID_JSON_RESPONSE", raw: text.substring(0, 300) });
+                    }
                 })
                 .catch(err => {
                     clearTimeout(timeoutId);
+                    if (err.name === 'AbortError') return; // Đã xử lý ở setTimeout
                     done({ error: err.toString() });
                 });
-            """
+
+            } catch(topErr) {
+                // Đảm bảo nếu có lỗi bất ngờ xảy ra vẫn trả về cho Selenium
+                done({ error: "CRITICAL_JS_ERROR: " + topErr.toString() });
+            }
+        """
         return self.driver.execute_async_script(
-            js_script, str(group_id), cursor, count, str(doc_id), str(friendly_name)
+            js_script,
+            str(group_id),
+            cursor,
+            count,
+            str(doc_id),
+            str(friendly_name),
         )
 
     def get_numeric_group_id(self, group_input: str = None) -> str:
@@ -529,6 +589,9 @@ class FacebookBot:
     
             return True
         
+        if self.is_stopped():
+            return 0
+
         if not group_id:
             print("⚠️ Thiếu group_id, bỏ qua tìm kiếm.")
             return 0
@@ -689,275 +752,12 @@ class FacebookBot:
 
         if unlimited:
             print(f"\n[HOÀN THÀNH] Đã cào TẤT CẢ {len(collected_uids)} UIDs trong nhóm!")
-    
+
+        # Xuất kết quả
+        #convert_to_spreadsheet(f"data/{group_id}.jsonl", f"{group_id}.xlsx")
+        #convert_to_spreadsheet(f"data/{group_id}.jsonl", f"{group_id}.csv")
+
         return len(collected_uids)
-
-
-    def extract_user_id(self, link):
-        if not link:
-            return None
-
-        # Kiểm tra profile.php trước khi tách dấu ?
-        if "profile.php" in link:
-            match = re.search(r"id=(\d+)", link)
-            if match:
-                return match.group(1)
-
-        clean_link = link.split("?")[0]
-
-        if "/user/" in clean_link:
-            return clean_link.split("/user/")[1].strip("/")
-
-        match = re.search(r"facebook\.com/(\d+)", clean_link)
-        if match:
-            return match.group(1)
-
-        username = (
-            clean_link.replace("https://www.facebook.com/", "")
-            .replace("http://www.facebook.com/", "")
-            .strip("/")
-        )
-        return username if username else None
-
-    # Tách hẳn collect_members thành một phương thức riêng của class
-    def _append_checkpoint(self, items):
-        """Ghi nối tiếp (append) danh sách member mới vào file jsonl/txt thông qua self.output_path"""
-        if not items or not getattr(self, "output_path", None):
-            return
-
-        try:
-            with open(self.output_path, "a", encoding="utf-8") as f:
-                for item in items:
-                    f.write(json.dumps(item, ensure_ascii=False) + "\n")
-            
-            print(f"💾 [AutoSave] Đã ghi thêm {len(items)} member mới vào file: {self.output_path}")
-        except Exception as e:
-            print(f"🚨 Lỗi khi ghi file {self.output_path}: {e}")
-
-    def collect_members(
-        self,
-        max_uids=0,
-        base_scroll_pause=2.5,
-        max_retries_per_scroll=4,
-        stop_after_no_change=10,
-        autosave_every=100,
-        gc_interval_seconds=300,
-    ):
-        driver = self.driver
-        collected = {}
-        unsaved_batch = []
-        no_change_count = 0
-        last_gc_time = time.time()
-
-        driver.set_script_timeout(15)
-
-        js_wait_mutation = """
-            const callback = arguments[arguments.length - 1];
-            const timeoutMs = arguments[0];
-
-            if (document.querySelectorAll('div[role="listitem"]:not([data-scanned="1"])').length > 0) {
-                return callback(true);
-            }
-
-            let observer = null;
-            const timer = setTimeout(() => {
-                if (observer) observer.disconnect();
-                callback(false);
-            }, timeoutMs);
-
-            observer = new MutationObserver((mutations) => {
-                if (document.querySelectorAll('div[role="listitem"]:not([data-scanned="1"])').length > 0) {
-                    clearTimeout(timer);
-                    if (observer) observer.disconnect();
-                    callback(true);
-                }
-            });
-
-            observer.observe(document.body, { childList: true, subtree: true });
-        """
-
-        js_extract_members = """
-            const items = document.querySelectorAll('div[role="listitem"]:not([data-scanned="1"])');
-            const newMembers = [];
-
-            for (let i = 0; i < items.length; i++) {
-                const item = items[i];
-                item.setAttribute('data-scanned', '1');
-
-                const linkElem = item.querySelector('a[role="link"]');
-                if (!linkElem) {
-                    item.remove();
-                    continue;
-                }
-
-                const href = linkElem.href || '';
-                if (!href || href.includes('#')) {
-                    item.remove();
-                    continue;
-                }
-
-                const name = linkElem.getAttribute('aria-label') || linkElem.innerText.trim();
-
-                const imgElem = item.querySelector('image, img');
-                let avatar = '';
-                if (imgElem) {
-                    avatar = imgElem.getAttribute('xlink:href') || imgElem.src || '';
-                    if (avatar.startsWith('data:image')) avatar = '';
-                }
-
-                const rawText = item.innerText || '';
-                const textLines = rawText.split(/\\r?\\n/).map(t => t.trim()).filter(Boolean);
-
-                newMembers.push({
-                    name: name,
-                    link: href,
-                    avatar: avatar,
-                    details: textLines
-                });
-
-                item.remove();
-            }
-
-            return newMembers;
-        """
-
-        def clear_chrome_mem():
-            try:
-                driver.execute_cdp_cmd("HeapProfiler.collectGarbage", {})
-            except Exception:
-                pass
-
-        while not self.is_stopped():
-            if max_uids > 0 and len(collected) >= max_uids:
-                break
-
-            previous_total = len(collected)
-            new_data_found = False
-
-            for retry in range(max_retries_per_scroll):
-                if self.is_stopped():
-                    break
-
-                # Step 1: Cuộn trang
-                try:
-                    js_scroll = """
-                        window.focus();
-                        try {
-                            Object.defineProperty(document, 'visibilityState', {get: () => 'visible', configurable: true});
-                            Object.defineProperty(document, 'hidden', {get: () => false, configurable: true});
-                            document.dispatchEvent(new Event('visibilitychange'));
-                        } catch(e) {}
-                        window.scrollBy(0, -300);
-                    """
-                    driver.execute_script(js_scroll)
-                    time.sleep(0.2)
-                    driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-                except Exception:
-                    pass
-
-                # Step 2: Chờ DOM xuất hiện phần tử mới
-                max_wait_ms = int((base_scroll_pause + (retry * 0.5)) * 1000)
-                try:
-                    driver.execute_async_script(js_wait_mutation, max_wait_ms)
-                except Exception:
-                    pass
-
-                if self.stop_event and self.stop_event.is_set():
-                    print("⏹️ Nhận lệnh dừng.")
-                    break
-
-                # Step 3: Trích xuất dữ liệu
-                try:
-                    raw_members = driver.execute_script(js_extract_members)
-                    if raw_members:
-                        for item in raw_members:
-                            link = item.get("link", "")
-                            if any(path in link for path in ["/photos/", "/stories/", "/reels/", "/watch/", "/members"]):
-                                continue
-
-                            user_id = self.extract_user_id(link)
-                            if user_id and user_id not in collected:
-                                item["user_id"] = user_id
-                                collected[user_id] = item
-                                unsaved_batch.append(item)
-
-                    if len(collected) > previous_total:
-                        new_data_found = True
-                        break
-
-                except WebDriverException as e:
-                    print(f"🚨 Lỗi Selenium/Mạng: {e.msg}")
-                    if "chrome not reachable" in str(e).lower() or "no such session" in str(e).lower():
-                        break
-                    if self.stop_event and self.stop_event.wait(timeout=5):
-                        break
-
-            # Step 4: Kiểm tra trạng thái dừng
-            if not new_data_found:
-                no_change_count += 1
-                print(f"⚠️ Không có dữ liệu mới. Đếm: {no_change_count}/{stop_after_no_change}")
-                if no_change_count >= stop_after_no_change:
-                    break
-            else:
-                no_change_count = 0
-
-            # Step 5: Tự động lưu nối tiếp vào file chỉ định theo đường dẫn self.output_path
-            if len(unsaved_batch) >= autosave_every:
-                self._append_checkpoint(unsaved_batch)
-                unsaved_batch.clear()
-
-            # Step 6: Giải phóng bộ nhớ Chrome định kỳ
-            if time.time() - last_gc_time > gc_interval_seconds:
-                clear_chrome_mem()
-                last_gc_time = time.time()
-
-        # Lưu vét nốt số member còn lại trong batch chưa kịp lưu
-        if unsaved_batch:
-            self._append_checkpoint(unsaved_batch)
-            unsaved_batch.clear()
-
-        clear_chrome_mem()
-        self.collected = collected
-        print(f"✅ Hoàn tất! Tổng cộng thu thập được {len(collected)} member và lưu tại '{self.output_path}'")
-        return list(collected.values())
-
-    def perform_search(self, group_id=None, timeout=30, *args, **kwargs):
-        if not group_id:
-            print("⚠️ Thiếu group_id, bỏ qua tìm kiếm.")
-            return []
-
-        max_uids = kwargs.get("max_uids", 0)
-        base_scroll_pause = kwargs.get("base_scroll_pause", 2.5)
-
-        # Truy cập thẳng URL tab members
-        target_url = f"https://www.facebook.com/groups/{group_id}/members"
-
-        print(f"🌐 Đang truy cập: {target_url}")
-
-        try:
-            self.driver.get(target_url)
-            # Chờ trang load cơ bản (có thể chờ body hoặc 1 element đặc trưng của group)
-            WebDriverWait(self.driver, timeout).until(
-                EC.presence_of_element_located((By.TAG_NAME, "body"))
-            )
-        except Exception as e:
-            print(f"🚨 Không thể truy cập nhóm {group_id}: {e}")
-            return [] # Dừng ngay lập tức nếu không mở được trang
-
-        # Tiến hành cào dữ liệu
-        users = self.collect_members(max_uids=max_uids, base_scroll_pause=base_scroll_pause) or []
-
-        if not users:
-            print("⚠️ Không thu thập được thành viên nào.")
-            return []
-
-        print(f"🎯 Hoàn thành! Đã lưu tổng cộng {len(users)} thành viên mới.")
-
-        # Xuất .csv và .xlsx từ file JSON đã lưu
-        convert_json_file_to_spreadsheet(json_filepath=self.output_path, output_file=self.output_path.replace(".jsonl", ".csv"))
-        convert_json_file_to_spreadsheet(json_filepath=self.output_path, output_file=self.output_path.replace(".jsonl", ".xlsx"))
-
-        return users
 
     # -------------------------
 
@@ -1329,8 +1129,6 @@ class FacebookBot:
                 print(f"Không tìm thấy nhóm sau 15s chờ đợi: {e}")
             print("Đã vào trang share group!")
 
-            time.sleep(10)
-
             editor_xpath = xpath_dialog + "//div[@data-lexical-editor='true' and contains(@aria-placeholder, 'Tạo bài viết')]"
             editor = WebDriverWait(self.driver, 10).until(
                 EC.element_to_be_clickable((By.XPATH, editor_xpath))
@@ -1338,7 +1136,6 @@ class FacebookBot:
 
             # Focus và nhập
             self.type_content_to_editor(editor, content)
-
 
             post_btn_xpath = xpath_dialog + "//*[@role='button' and (@aria-label='Đăng' or @aria-label='Post')]"
             post_btn = WebDriverWait(self.driver, 10).until(

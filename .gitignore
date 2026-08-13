@@ -5,9 +5,13 @@
 *.py[cod]
 *$py.class
 *.pyc
+
+*.html
 *.jsonl
 *.json
 *.pkl
+*.csv
+*.xlsx
 
 # Virtual environments
 .venv/

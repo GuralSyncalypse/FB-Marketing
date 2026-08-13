@@ -17,65 +17,43 @@ class UidScanScreen(tk.Frame):
         self._build_ui()
 
     def _build_ui(self):
-        left_frame = ttk.LabelFrame(self.parent, text=" Cấu hình quét UID ", padding=10)
-        left_frame.pack(side="left", fill="both", expand=True, padx=10, pady=10)
+        # ================= CỘT TRÁI: CẤU HÌNH & ĐIỀU KHIỂN =================
+        left_frame = ttk.LabelFrame(
+            self.parent, text=" Cấu hình quét UID ", padding=12
+        )
+        # expand=False giúp cột trái giữ nguyên chiều rộng chuẩn, không bị phình to bất hợp lý
+        left_frame.pack(
+            side="left", fill="y", expand=False, padx=(10, 5), pady=10
+        )
 
-        ttk.Label(
-            left_frame,
-            text="Màn hình này dùng để quét UID các thành viên từ danh sách nhóm đã chọn.",
-            wraplength=320,
-            foreground="#444444",
-        ).pack(anchor="w", pady=(0, 10))
-
-        group_box = ttk.LabelFrame(left_frame, text=" Nguồn groups ", padding=8)
+        # 1. Trạng thái Nguồn Group
+        group_box = ttk.LabelFrame(left_frame, text=" Nguồn Groups ", padding=10)
         group_box.pack(fill="x", pady=(0, 10))
 
-        self.lbl_group_status = ttk.Label(group_box, text="Chưa nạp groups")
+        self.lbl_group_status = ttk.Label(
+            group_box, text="Chưa nạp groups", font=("Segoe UI", 9, "bold")
+        )
         self.lbl_group_status.pack(anchor="w")
 
-        btn_row = ttk.Frame(group_box)
-        btn_row.pack(fill="x", pady=(8, 0))
-
-        ttk.Button(
-            btn_row,
-            text="Tải lại groups",
-            command=self.refresh_groups_preview,
-        ).pack(side="left", fill="x", expand=True, padx=(0, 2))
-
-        # Nút Bắt đầu quét UID
-        self.btn_start = ttk.Button(
-            btn_row,
-            text="Bắt đầu quét",
-            command=self.start_uid_scan,
-        )
-        self.btn_start.pack(side="left", fill="x", expand=True, padx=2)
-
-        # Nút Dừng quét UID (Thêm mới)
-        self.btn_stop = ttk.Button(
-            btn_row,
-            text="Dừng quét",
-            command=self.stop_uid_scan,
-            state=tk.DISABLED
-        )
-        self.btn_stop.pack(side="left", fill="x", expand=True, padx=(2, 0))
-
-        option_box = ttk.LabelFrame(left_frame, text=" Tùy chọn quét ", padding=8)
+        # 2. Tùy chọn quét
+        option_box = ttk.LabelFrame(left_frame, text=" Tùy chọn quét ", padding=10)
         option_box.pack(fill="x", pady=(0, 10))
 
-        # --- Checkbutton nhóm 1: Phạm vi quét ---
         self.chk_only_selected_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(
             option_box,
             text="Chỉ quét các group đang được chọn",
             variable=self.chk_only_selected_var,
-        ).pack(anchor="w", pady=2)
+        ).pack(anchor="w", pady=(0, 8))
 
-        # --- Frame chứa giới hạn UID & Số lần thử lại ---
+        # Căn chỉnh Spinbox gọn gàng bằng Grid
         limit_frame = ttk.Frame(option_box)
-        limit_frame.pack(fill="x", pady=(6, 2))
+        limit_frame.pack(fill="x")
 
-        # Spinbox 1: Giới hạn UID
-        ttk.Label(limit_frame, text="Giới hạn UID/Group:").grid(row=0, column=0, sticky="w", padx=(0, 5))
+        # Dòng 0: Giới hạn UID
+        ttk.Label(limit_frame, text="Giới hạn UID/Group:").grid(
+            row=0, column=0, sticky="w", pady=3
+        )
         self.spin_max_members_var = tk.IntVar(value=5000)
         ttk.Spinbox(
             limit_frame,
@@ -83,12 +61,16 @@ class UidScanScreen(tk.Frame):
             to=500000,
             increment=500,
             textvariable=self.spin_max_members_var,
-            width=10
-        ).grid(row=0, column=1, sticky="w", pady=2)
-        ttk.Label(limit_frame, text="(0 = Tất cả)").grid(row=0, column=2, sticky="w", padx=(5, 0))
+            width=8,
+        ).grid(row=0, column=1, sticky="w", padx=5, pady=3)
+        ttk.Label(limit_frame, text="(0 = Tất cả)", foreground="#666666").grid(
+            row=0, column=2, sticky="w", pady=3
+        )
 
-        # Spinbox 2: Số lần thử lại (Retries)
-        ttk.Label(limit_frame, text="Số lần thử lại (Retries):").grid(row=1, column=0, sticky="w", padx=(0, 5), pady=(4, 0))
+        # Dòng 1: Số lần thử lại
+        ttk.Label(limit_frame, text="Số lần thử lại:").grid(
+            row=1, column=0, sticky="w", pady=3
+        )
         self.spin_retries_var = tk.IntVar(value=3)
         ttk.Spinbox(
             limit_frame,
@@ -96,15 +78,39 @@ class UidScanScreen(tk.Frame):
             to=10,
             increment=1,
             textvariable=self.spin_retries_var,
-            width=10
-        ).grid(row=1, column=1, sticky="w", pady=(4, 0))
+            width=8,
+        ).grid(row=1, column=1, sticky="w", padx=5, pady=3)
 
-        self.lbl_status = ttk.Label(left_frame, text="Trạng thái: Sẵn sàng", foreground="blue")
-        self.lbl_status.pack(anchor="w", pady=(4, 0))
+        # 3. Cụm nút bấm điều khiển
+        btn_action_frame = ttk.Frame(left_frame)
+        btn_action_frame.pack(fill="x", pady=(5, 10))
 
-        # BẢNG THỐNG KÊ KẾT QUẢ QUÉT (CHỈ HIỂN THỊ TỔNG QUAN GROUP)
-        right_frame = ttk.LabelFrame(self.parent, text=" Tiến trình quét theo Group ", padding=10)
-        right_frame.pack(side="right", fill="both", expand=True, padx=10, pady=10)
+        self.btn_start = ttk.Button(
+            btn_action_frame, text="▶ Bắt đầu quét", command=self.start_uid_scan
+        )
+        self.btn_start.pack(side="left", fill="x", expand=True, padx=(0, 3))
+
+        self.btn_stop = ttk.Button(
+            btn_action_frame,
+            text="⏹ Dừng quét",
+            command=self.stop_uid_scan,
+            state=tk.DISABLED,
+        )
+        self.btn_stop.pack(side="right", fill="x", expand=True, padx=(3, 0))
+
+        # Hiển thị Trạng thái
+        self.lbl_status = ttk.Label(
+            left_frame, text="Trạng thái: Sẵn sàng", foreground="#0066cc"
+        )
+        self.lbl_status.pack(anchor="w")
+
+        # ================= CỘT PHẢI: BẢNG KẾT QUẢ QUÉT =================
+        right_frame = ttk.LabelFrame(
+            self.parent, text=" Tiến trình quét theo Group ", padding=12
+        )
+        right_frame.pack(
+            side="right", fill="both", expand=True, padx=(5, 10), pady=10
+        )
 
         tree_frame = ttk.Frame(right_frame)
         tree_frame.pack(fill="both", expand=True)
@@ -113,34 +119,43 @@ class UidScanScreen(tk.Frame):
             tree_frame,
             columns=("group_name", "group_id", "count", "status"),
             show="headings",
-            height=14,
+            selectmode="browse",
         )
         self.tree_results.heading("group_name", text="Tên Group")
         self.tree_results.heading("group_id", text="ID Group")
         self.tree_results.heading("count", text="Số UID thu thập")
         self.tree_results.heading("status", text="Trạng thái")
 
-        self.tree_results.column("group_name", width=200, anchor="w")
-        self.tree_results.column("group_id", width=130, anchor="w")
+        self.tree_results.column("group_name", width=220, anchor="w")
+        self.tree_results.column("group_id", width=120, anchor="w")
         self.tree_results.column("count", width=110, anchor="e")
-        self.tree_results.column("status", width=90, anchor="center")
+        self.tree_results.column("status", width=100, anchor="center")
 
-        scrollbar = ttk.Scrollbar(tree_frame, orient="vertical", command=self.tree_results.yview)
+        scrollbar = ttk.Scrollbar(
+            tree_frame, orient="vertical", command=self.tree_results.yview
+        )
         self.tree_results.configure(yscrollcommand=scrollbar.set)
 
         self.tree_results.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
 
+        # Thanh công cụ bên dưới bảng kết quả
         footer_row = ttk.Frame(right_frame)
         footer_row.pack(fill="x", pady=(10, 0))
 
+        # Bổ sung nút Xuất dữ liệu
         ttk.Button(
             footer_row,
-            text="Clear kết quả",
-            command=self.clear_results,
-        ).pack(side="left", fill="x", expand=True, padx=(0, 4))
+            text="💾 Xuất danh sách UID",
+            command=getattr(self, "export_results", lambda: None),
+        ).pack(side="left")
 
-        self.refresh_groups_preview()
+        ttk.Button(
+            footer_row, text="🗑 Clear kết quả", command=self.clear_results
+        ).pack(side="right")
+
+        if hasattr(self, "refresh_groups_preview"):
+            self.refresh_groups_preview()
 
     def get_source_groups(self):
         groups = getattr(self.controller, "groups_data", []) or []
@@ -188,7 +203,6 @@ class UidScanScreen(tk.Frame):
     # =========================================================================
     # LOGIC CHẠY TỰ ĐỘNG VỚI SELENIUM THREADING
     # =========================================================================
-
     def handle_save_batch(self, batch_data, file_name="output.jsonl", folder_path="data"):
         """
         Hàm lưu dữ liệu vào thư mục chỉ định.
@@ -266,7 +280,7 @@ class UidScanScreen(tk.Frame):
                 return
 
             # Đăng nhập bằng Cookies
-            if not bot_obj.start_browser(user, user_agent=self.controller.get_user_agent()):
+            if not bot_obj.start_browser(user, user_agent=self.controller.get_user_agent(), driver_type="undetected"):
                 self.after(0, lambda: messagebox.showerror("Lỗi", "Đăng nhập thất bại!"))
                 return
 
@@ -295,6 +309,7 @@ class UidScanScreen(tk.Frame):
 
                     group_count = members
                     total_found += group_count
+                    
                     self.after(0, self.add_group_result, group_name, group_id, group_count, "OK")
 
                 except Exception as group_err:

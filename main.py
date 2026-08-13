@@ -66,6 +66,7 @@ class App(tk.Tk):
   def load_data(self) -> list:
     """Đọc dữ liệu của User chỉ trong 1 dòng"""
     try:
+        self.screens["Quét UID"].refresh_groups_preview()
         with open("groups_saved.json", "r", encoding="utf-8") as f:
             data = json.load(f)
             # Lấy trực tiếp groups của uid, nếu không có trả về []
@@ -238,27 +239,78 @@ class App(tk.Tk):
     self.lbl_group_count_var.set(f"Đã chọn: {selected_count}/{total_count} nhóm")
 
   def open_groups_window(self):
-    """Mở cửa sổ mới (Popup) hiển thị chi tiết danh sách nhóm và tích chọn"""
-    current_uid = self.ent_uid_shared.get()
-
-    # ================= KHỞI TẠO GIAO DIỆN POPUP =================
+    """Mở cửa sổ Popup quản lý và tích chọn danh sách nhóm"""
+    # ================= KHỞI TẠO CỬA SỔ POPUP =================
     groups_win = tk.Toplevel(self)
-    groups_win.title("Quản lý danh sách Groups")
-    groups_win.geometry("550x450")
+    groups_win.title("Danh sách nhóm")
+    groups_win.geometry("580x520")
     groups_win.grab_set()
     groups_win.resizable(False, False)
 
-    toolbar = ttk.Frame(groups_win, padding=10)
+    # 1. TOOLBAR TẠO THAO TÁC CHÍNH (Top Bar)
+    toolbar = ttk.Frame(groups_win, padding=(10, 10, 10, 5))
     toolbar.pack(fill="x")
 
-    main_content = ttk.Frame(groups_win, padding=10)
+    # 2. THANH TÌM KIẾM (Search Bar)
+    search_frame = ttk.Frame(groups_win, padding=(10, 5, 10, 5))
+    search_frame.pack(fill="x")
+
+    # 3. NỘI DUNG BẢNG (Treeview Main)
+    main_content = ttk.Frame(groups_win, padding=(10, 5, 10, 10))
     main_content.pack(fill="both", expand=True)
 
+    # ================= XÂY DỰNG CONTROL =================
+    # --- Toolbar controls ---
+    btn_scan = ttk.Button(toolbar, text="Quét", command=lambda: handle_scan())
+    btn_scan.pack(side="left", padx=(0, 10))
+
+    rad_var = tk.IntVar(value=-1)
+
+    rad_all = ttk.Radiobutton(
+        toolbar,
+        text="Chọn tất cả",
+        variable=rad_var,
+        value=1,
+        command=lambda: on_radio_changed(),
+    )
+    rad_all.pack(side="left", padx=5)
+
+    rad_none = ttk.Radiobutton(
+        toolbar,
+        text="Bỏ chọn tất cả",
+        variable=rad_var,
+        value=0,
+        command=lambda: on_radio_changed(),
+    )
+    rad_none.pack(side="left", padx=5)
+
+    btn_save = ttk.Button(
+        toolbar, text="Xác nhận", command=lambda: save_and_close()
+    )
+    btn_save.pack(side="right")
+
+    # --- Search Bar controls ---
+    ttk.Label(search_frame, text="🔍 Tìm kiếm:").pack(
+        side="left", padx=(0, 5)
+    )
+    search_var = tk.StringVar()
+    ent_search = ttk.Entry(search_frame, textvariable=search_var)
+    ent_search.pack(side="left", fill="x", expand=True, padx=(0, 5))
+
+    btn_clear_search = ttk.Button(
+        search_frame,
+        text="✕",
+        width=3,
+        command=lambda: search_var.set(""),
+    )
+    btn_clear_search.pack(side="right")
+
+    # --- Treeview controls ---
     tree_groups = ttk.Treeview(
-        main_content,
-        columns=("Select", "Name"),
-        show="headings",
-        selectmode="none",
+      main_content,
+      columns=("Select", "Name"),
+      show="headings",
+      selectmode="browse",  # Chuyển thành "browse" để bật Highlight dòng khi click
     )
 
     scrollbar = ttk.Scrollbar(
@@ -270,115 +322,152 @@ class App(tk.Tk):
     tree_groups.heading("Name", text="Tên nhóm")
 
     tree_groups.column("Select", width=60, anchor="center")
-    tree_groups.column("Name", width=430, anchor="w")
+    tree_groups.column("Name", width=440, anchor="w")
 
     tree_groups.pack(side="left", fill="both", expand=True)
     scrollbar.pack(side="right", fill="y")
 
-    def refresh_tree():
-      tree_groups.delete(*tree_groups.get_children())
-      for idx, g in enumerate(self.groups_data):
-        status = "🟢 [X]" if g.get("checked", False) else "⚪ [ ]"
-        tree_groups.insert(
-            "", "end", iid=str(idx), values=(status, g.get("name", ""))
-        )
+    # ================= LOGIC VÀ XỬ LÝ SỰ KIỆN =================
+    def refresh_tree(*args):
+        """Làm mới dữ liệu hiển thị trên Treeview theo từ khóa tìm kiếm"""
+        tree_groups.delete(*tree_groups.get_children())
+        query = search_var.get().strip().lower()
 
-      update_radio_selection_state()
+        for idx, g in enumerate(self.groups_data):
+            name = g.get("name", "")
+            # Lọc theo từ khóa tìm kiếm
+            if query and query not in name.lower():
+                continue
+
+            # Chuẩn hóa biểu tượng Checkbox gọn gàng
+            status = "☑" if g.get("checked", False) else "☐"
+            # Lưu chỉ số thật (idx) vào iid để không bị lệch dữ liệu khi filter
+            tree_groups.insert(
+                "", "end", iid=str(idx), values=(status, name)
+            )
+
+        update_radio_selection_state()
+
+    def toggle_item(item_id):
+      if item_id:
+          idx = int(item_id)
+          # 1. Đảo trạng thái trong dữ liệu gốc
+          self.groups_data[idx]["checked"] = not self.groups_data[idx]["checked"]
+
+          # 2. Cập nhật trực tiếp giao diện dòng này (giữ nguyên trạng thái Highlight)
+          status = "☑" if self.groups_data[idx]["checked"] else "☐"
+          name = self.groups_data[idx].get("name", "")
+          tree_groups.item(item_id, values=(status, name))
+
+          # 3. Kích hoạt Highlight dòng vừa click
+          tree_groups.selection_set(item_id)
+
+          # 4. Cập nhật lại nút 'Chọn tất cả / Bỏ chọn'
+          update_radio_selection_state()
 
     def on_tree_click(event):
-      item_id = tree_groups.identify_row(event.y)
-      column = tree_groups.identify_column(event.x)
-      if item_id and column == "#1":
-        idx = int(item_id)
-        self.groups_data[idx]["checked"] = not self.groups_data[idx]["checked"]
-        refresh_tree()
+        """Click vào cột 'Chọn' để bật/tắt checkbox"""
+        item_id = tree_groups.identify_row(event.y)
+        column = tree_groups.identify_column(event.x)
+        if item_id and column == "#1":
+            toggle_item(item_id)
 
-    tree_groups.bind("<ButtonRelease-1>", on_tree_click)
+    def on_tree_double_click(event):
+        """Double click vào bất kỳ dòng nào để bật/tắt checkbox"""
+        item_id = tree_groups.identify_row(event.y)
+        if item_id:
+            toggle_item(item_id)
 
     def on_radio_changed():
-      val = rad_var.get()
-      if val == 1:
+        """Chọn/Bỏ chọn tất cả các nhóm đang được lọc hiển thị"""
+        val = rad_var.get()
+        query = search_var.get().strip().lower()
+
         for g in self.groups_data:
-          g["checked"] = True
-      elif val == 0:
-        for g in self.groups_data:
-          g["checked"] = False
-      refresh_tree()
+            # Nếu đang search, chỉ tác động lên các nhóm khớp tìm kiếm
+            if not query or query in g.get("name", "").lower():
+                g["checked"] = val == 1
+
+        refresh_tree()
 
     def update_radio_selection_state():
-      if not self.groups_data:
-        rad_var.set(-1)
-        return
+        """Cập nhật trạng thái hiển thị của nút Chọn tất cả / Bỏ chọn"""
+        if not self.groups_data:
+            rad_var.set(-1)
+            return
 
-      all_checked = all(g.get("checked", False) for g in self.groups_data)
-      all_unchecked = all(not g.get("checked", False) for g in self.groups_data)
+        all_checked = all(g.get("checked", False) for g in self.groups_data)
+        all_unchecked = all(
+            not g.get("checked", False) for g in self.groups_data
+        )
 
-      if all_checked:
-        rad_var.set(1)
-      elif all_unchecked:
-        rad_var.set(0)
-      else:
-        rad_var.set(-1)
+        if all_checked:
+            rad_var.set(1)
+        elif all_unchecked:
+            rad_var.set(0)
+        else:
+            rad_var.set(-1)
 
     def handle_scan():
-      if not current_uid:
-        messagebox.showwarning(
-            "Cảnh báo", "Vui lòng nhập/chọn UID trước khi quét!"
-        )
-        return
+        if not self.has_uid:
+            messagebox.showwarning(
+                "Cảnh báo", "Vui lòng nhập/chọn UID trước khi quét!"
+            )
+            return
 
-      btn_scan.config(state="disabled", text="Đang quét...")
+        btn_scan.config(state="disabled", text="Đang quét...")
 
-      def local_refresh():
-        refresh_tree()
-        self.lbl_group_count_var.set(
-            f"Đã quét: {len(self.groups_data)} groups"
-        )
-        btn_scan.config(state="normal", text="Quét")
-        messagebox.showinfo(
-            "Thành công",
-            f"Đã cập nhật {len(self.groups_data)} nhóm thành công!",
-        )
+        def local_refresh():
+            refresh_tree()
+            self.lbl_group_count_var.set(
+                f"Đã quét: {len(self.groups_data)} groups"
+            )
+            btn_scan.config(state="normal", text="Quét")
+            messagebox.showinfo(
+                "Thành công",
+                f"Đã cập nhật {len(self.groups_data)} nhóm thành công!",
+            )
 
-      self._trigger_ui_refresh = local_refresh
-      self.scan_groups()
-
-    btn_scan = ttk.Button(toolbar, text="Quét", command=handle_scan)
-    btn_scan.pack(side="left", padx=5)
-
-    rad_var = tk.IntVar(value=-1)
-
-    rad_all = ttk.Radiobutton(
-        toolbar,
-        text="Chọn tất cả",
-        variable=rad_var,
-        value=1,
-        command=on_radio_changed,
-    )
-    rad_all.pack(side="left", padx=10)
-
-    rad_none = ttk.Radiobutton(
-        toolbar,
-        text="Bỏ chọn tất cả",
-        variable=rad_var,
-        value=0,
-        command=on_radio_changed,
-    )
-    rad_none.pack(side="left", padx=5)
+        self._trigger_ui_refresh = local_refresh
+        self.scan_groups()
 
     def save_and_close():
-      self.update_group_selection()
-      groups_win.destroy()
+        self.screens["Quét UID"].refresh_groups_preview()
+        self.update_group_selection()
+        groups_win.destroy()
 
-    btn_save = ttk.Button(
-        toolbar, text="Xác nhận", command=save_and_close
-    )
-    btn_save.pack(side="right", padx=5)
+    # Bắt sự kiện thay đổi trên ô tìm kiếm
+    search_var.trace_add("write", refresh_tree)
 
+    # Gán sự kiện tương tác chuột cho Treeview
+    tree_groups.bind("<ButtonRelease-1>", on_tree_click)
+    tree_groups.bind("<Double-1>", on_tree_double_click)
+
+    # Khởi chạy ban đầu
     refresh_tree()
 
   def __build_navigation_tabs(self):
     """Xây dựng khu vực Notebook và nhúng các màn hình tính năng vào"""
+    def on_tab_changed(event):
+      # Lấy Notebook phát ra sự kiện
+      notebook = event.widget
+
+      # Lấy ID/Widget của tab đang được chọn
+      selected_tab = notebook.select()
+
+      # Lấy index của tab (0, 1, 2,...)
+      current_index = notebook.index(selected_tab)
+
+      # Lấy tiêu đề (text) của tab
+      tab_title = notebook.tab(selected_tab, "text")
+      # Xử lý logic tương ứng từng tab
+      if current_index == 0:
+          # Code khi ở Tab 1
+          pass
+      elif tab_title == "Quét UID":
+          self.screens[tab_title].refresh_groups_preview()
+
+
     self.notebook = ttk.Notebook(self)
     self.notebook.pack(fill="both", expand=True, padx=5, pady=5)
 
@@ -400,6 +489,8 @@ class App(tk.Tk):
 
       self.tabs.append(tab)
       self.screens[label] = screen
+
+    self.notebook.bind("<<NotebookTabChanged>>", on_tab_changed)
 
   # ================= CÁC HÀM XỬ LÝ LOGIC =================
   def save_to_profile_folder(self, uid: str, cookies: list):
@@ -435,6 +526,8 @@ class App(tk.Tk):
         self.has_uid = True
         self.save_to_profile_folder(self.uid, self.cookies)
 
+    self.screens["Quét UID"].refresh_groups_preview()
+
   def scan_groups(self):
     uid = self.ent_uid_shared.get()
 
@@ -447,7 +540,7 @@ class App(tk.Tk):
     worker = None
     try:
         worker = bot.FacebookBot(visualize=self.is_demo_mode)
-        # worker.login_with_cookies(user, self.cookies)
+
         success = worker.start_browser(
             uid=user, user_agent=self.user_agent
         )
