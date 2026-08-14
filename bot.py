@@ -21,20 +21,29 @@ import pandas as pd
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__)) # Thư mục /app
 
-def convert_to_spreadsheet(json_filepath, output_file="facebook_users.xlsx"):
+import json
+import os
+import re
+import pandas as pd
+
+
+def convert_to_spreadsheet(json_filepath, output_filename=None):
+    """Đọc file .json hoặc .jsonl, xử lý dữ liệu và tự động xuất ra đúng thư mục:
+
+    - Nếu đầu ra là CSV  -> lưu vào './data/processed/csv/'
+    - Nếu đầu ra là XLSX -> lưu vào './data/processed/excel/'
     """
-    Đọc file .json hoặc .jsonl và chuyển đổi sang file Excel (.xlsx) hoặc CSV (.csv).
-    """
+
     def parse_contribution_score(score_str):
         """Trích xuất số từ chuỗi contribution_score, mặc định là 0 nếu null hoặc rỗng."""
         if not score_str:
             return 0
-        match = re.search(r'\d+', str(score_str))
+        match = re.search(r"\d+", str(score_str))
         return int(match.group()) if match else 0
 
     def parse_boolean_status(status_str, positive_value):
-        """
-        Chuyển đổi trạng thái text sang Boolean:
+        """Chuyển đổi trạng thái text sang Boolean:
+
         - Nếu đúng positive_value -> True
         - Nếu null / None / rỗng -> None (Để trống trong Excel/CSV)
         - Nếu là trạng thái ngược lại -> False
@@ -45,23 +54,51 @@ def convert_to_spreadsheet(json_filepath, output_file="facebook_users.xlsx"):
             return True
         return False
 
+    # 0. KIỂM TRA FILE ĐẦU VÀO
     if not os.path.exists(json_filepath):
-        print(f"Lỗi: Không tìm thấy file '{json_filepath}'")
+        print(f"❌ Lỗi: Không tìm thấy file '{json_filepath}'")
         return
 
-    items = []
+    # Tự động tạo tên file xuất ra nếu người dùng không truyền vào
+    base_name = os.path.splitext(os.path.basename(json_filepath))[0]
+    if not output_filename:
+        output_filename = f"{base_name}_cleaned.csv"  # Mặc định là CSV
 
-    # 1. Đọc file .json / .jsonl
-    with open(json_filepath, 'r', encoding='utf-8') as f:
-        if json_filepath.endswith('.jsonl'):
+    # ---------------------------------------------------------
+    # 1. TÍNH TOÁN VÀ TẠO THƯ MỤC ĐẦU RA (DATA/PROCESSED/...)
+    # ---------------------------------------------------------
+    file_ext = os.path.splitext(output_filename)[1].lower()
+
+    if file_ext == ".csv":
+        output_dir = ".\\data\\processed\\csv"
+    elif file_ext == ".xlsx":
+        output_dir = ".\\data\\processed\\excel"
+    else:
+        raise ValueError(
+            "❌ Định dạng file không hỗ trợ. Vui lòng chọn file có đuôi .xlsx hoặc .csv"
+        )
+
+    # Tự động tạo folder nếu chưa tồn tại
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Đường dẫn file hoàn chỉnh
+    final_output_path = os.path.join(output_dir, output_filename)
+
+    # ---------------------------------------------------------
+    # 2. ĐỌC FILE .JSON / .JSONL
+    # ---------------------------------------------------------
+    items = []
+    with open(json_filepath, "r", encoding="utf-8") as f:
+        if json_filepath.endswith(".jsonl"):
             items = [json.loads(line) for line in f if line.strip()]
         else:
             data = json.load(f)
             items = data if isinstance(data, list) else [data]
 
+    # ---------------------------------------------------------
+    # 3. XỬ LÝ TỪNG ĐỐI TƯỢNG
+    # ---------------------------------------------------------
     processed_rows = []
-
-    # 2. Xử lý từng đối tượng
     for item in items:
         row = {
             "user_id": str(item.get("id") or item.get("user_id") or ""),
@@ -72,33 +109,40 @@ def convert_to_spreadsheet(json_filepath, output_file="facebook_users.xlsx"):
             "follower_count": item.get("follower_count", 0),
             "is_verified": item.get("is_verified", False),
             "category": item.get("category", ""),
-            
             # Các trường xử lý đặc biệt
-            "contribution_score": parse_contribution_score(item.get("contribution_score")),
-            "friendship_status": parse_boolean_status(item.get("friendship_status"), "CAN_REQUEST"),
-            "subscribe_status": parse_boolean_status(item.get("subscribe_status"), "CAN_SUBSCRIBE"),
-            
+            "contribution_score": parse_contribution_score(
+                item.get("contribution_score")
+            ),
+            "friendship_status": parse_boolean_status(
+                item.get("friendship_status"), "CAN_REQUEST"
+            ),
+            "subscribe_status": parse_boolean_status(
+                item.get("subscribe_status"), "CAN_SUBSCRIBE"
+            ),
             "membership_id": str(item.get("membership_id") or ""),
             "join_status_text": item.get("join_status_text", ""),
             "added_by_id": str(item.get("added_by_id") or ""),
             "added_by_name": item.get("added_by_name", ""),
-            "added_by_url": item.get("added_by_url", "")
+            "added_by_url": item.get("added_by_url", ""),
         }
-
         processed_rows.append(row)
 
-    # 3. Xuất ra DataFrame & Lưu file
+    # ---------------------------------------------------------
+    # 4. XUẤT RA DATAFRAME & LƯU VÀO ĐÚNG FOLDER PROCESSED
+    # ---------------------------------------------------------
     df = pd.DataFrame(processed_rows)
 
-    if output_file.endswith(".csv"):
-        # na_rep="" đảm bảo các giá trị None/null ghi ra CSV dạng ô trống
-        df.to_csv(output_file, index=False, encoding="utf-8-sig", na_rep="")
-    elif output_file.endswith(".xlsx"):
-        df.to_excel(output_file, index=False, engine="openpyxl")
-    else:
-        raise ValueError("Định dạng file không hỗ trợ. Vui lòng chọn .xlsx hoặc .csv")
+    if file_ext == ".csv":
+        df.to_csv(
+            final_output_path, index=False, encoding="utf-8-sig", na_rep=""
+        )
+    elif file_ext == ".xlsx":
+        df.to_excel(final_output_path, index=False, engine="openpyxl")
 
-    print(f"Đã chuyển đổi thành công {len(df)} dòng từ '{json_filepath}' sang '{output_file}'!")
+    print(
+        f"✅ Đã chuyển đổi {len(df)} dòng thành công!"
+        f"\n📍 File được lưu tại: {final_output_path}"
+    )
 
 class FacebookBot:
     def __init__(self, visualize=False, output_path="users.json", stop_event=None, on_save_batch=None):
@@ -146,6 +190,7 @@ class FacebookBot:
         except Exception as e:
             print(f"⚠️ Không thể lưu checkpoint: {e}")
 
+
     def start_browser(
         self,
         uid: str,
@@ -153,15 +198,22 @@ class FacebookBot:
         proxy: str = None,
         driver_type: str = "undetected",
     ) -> bool:
-        """Khởi tạo Driver (Standard/UC) tích hợp tối ưu tốc độ, Profile cách ly và nạp Cookie bằng hàm con."""
+        """Khởi tạo Driver (UC với Fallback về Standard) tích hợp tối ưu tốc độ, Profile cách ly và nạp Cookie chuẩn xác."""
 
         # --- HÀM CON XỬ LÝ NẠP COOKIE ---
         def _inject_cookies(driver_instance, file_path):
-            """Hàm con riêng biệt xử lý đọc file JSON và nạp Cookie vào Driver"""
+            if not os.path.exists(file_path):
+                print(f"[{uid}] -> Không tìm thấy file cookie tại: {file_path}")
+                return False
+
             try:
                 with open(file_path, "r", encoding="utf-8") as f:
                     cookies = json.load(f)
 
+                driver_instance.get("https://www.facebook.com")
+                time.sleep(1)
+
+                success_count = 0
                 for cookie in cookies:
                     cookie_dict = {
                         "name": cookie.get("name"),
@@ -170,136 +222,136 @@ class FacebookBot:
                         "path": cookie.get("path", "/"),
                         "secure": cookie.get("secure", True),
                     }
-                    if "expirationDate" in cookie:
-                        cookie_dict["expiry"] = int(cookie["expirationDate"])
+
+                    if (
+                        "expirationDate" in cookie
+                        and cookie["expirationDate"] is not None
+                    ):
+                        try:
+                            cookie_dict["expiry"] = int(
+                                float(cookie["expirationDate"])
+                            )
+                        except (ValueError, TypeError):
+                            pass
 
                     try:
                         driver_instance.add_cookie(cookie_dict)
+                        success_count += 1
                     except Exception:
                         pass
 
                 driver_instance.refresh()
-                time.sleep(3)
-                print(f"[{uid}] -> Lần đầu chạy: Đã nạp Cookie thành công.")
+                time.sleep(2)
+                print(
+                    f"[{uid}] -> Đã nạp thành công {success_count}/{len(cookies)} Cookie."
+                )
+                return True
             except Exception as e:
-                print(f"[{uid}] -> Lỗi khi nạp Cookie: {str(e)}")
+                print(f"[{uid}] -> Lỗi khi đọc/nạp Cookie: {str(e)}")
+                return False
 
+        # 1. TÍNH TOÁN CÁC BIẾN CƠ BẢN
         self.user_agent = user_agent
-
-        # 1. QUẢN LÝ THƯ MỤC PROFILE VÀ COOKIE
         profile_path = os.path.abspath(f"./profiles/{uid}")
         cookie_file_path = os.path.join(profile_path, "cookies.json")
 
         mode = driver_type or getattr(self, "driver_type", "undetected")
         ua = user_agent or getattr(self, "user_agent", None)
-
-        # 2. CẤU HÌNH OPTIONS
-        if mode == "standard":
-            chrome_options = StandardOptions()
-            chrome_options.add_argument(f"--user-data-dir={profile_path}")
-            chrome_options.add_argument("--disable-blink-features=AutomationControlled")
-            print("[Selenium Standard] Đang khởi tạo...")
-        else:
-            chrome_options = uc.ChromeOptions()
-            print("[uc.Selenium] Đang khởi tạo Undetected ChromeDriver...")
-            # LƯU Ý: Với uc, KHÔNG add --user-data-dir vào chrome_options ở đây nữa!
-
-        if ua:
-            chrome_options.add_argument(f"--user-agent={ua}")
-        if proxy:
-            chrome_options.add_argument(f"--proxy-server={proxy}")
-
-        chrome_options.add_argument(f"--user-data-dir={profile_path}")
-        if ua:
-            chrome_options.add_argument(f"--user-agent={ua}")
-        if proxy:
-            chrome_options.add_argument(f"--proxy-server={proxy}")
-
-        # Tối ưu tốc độ & Chặn tài nguyên nặng
-        chrome_options.add_argument("--disable-gpu")
-        chrome_options.add_argument("--disable-software-rasterizer")
-        chrome_options.add_argument("--no-sandbox")
-        chrome_options.add_argument("--disable-dev-shm-usage")
-        chrome_options.add_argument("--disable-notifications")
-        chrome_options.add_argument("--disable-logging")
-
-        # Chống đóng/chậm tiến trình khi mất focus hoặc ẩn cửa sổ
-        chrome_options.add_argument("--disable-background-timer-throttling")
-        chrome_options.add_argument("--disable-backgrounding-occluded-windows")
-        chrome_options.add_argument("--disable-renderer-backgrounding")
-
-        # Chặn tải hình ảnh
-        prefs = {"profile.managed_default_content_settings.images": 2}
-        chrome_options.add_experimental_option("prefs", prefs)
-
-        # Xử lý Headless / Visual Mode
         visualize = getattr(self, "visualize", True)
-        if not visualize:
-            chrome_options.add_argument("--window-size=1920,1080")
-            if mode == "standard":
-                chrome_options.add_argument("--headless=new")
-            print(f"[{mode}] Đang chạy ở chế độ ẨN (Headless)...")
-        else:
-            chrome_options.add_argument("--start-maximized")
-            print(f"[{mode}] Đang chạy ở chế độ HIỂN THỊ CỬA SỔ...")
 
-        # 3. KHỞI TẠO DRIVER
-        if mode == "standard":
-            self.driver = webdriver.Chrome(options=chrome_options)
-        else:
-            # Truyền user_data_dir trực tiếp vào uc.Chrome và BỎ version_main=150
-            self.driver = uc.Chrome(
-                options=chrome_options,
-                user_data_dir=profile_path,  # Truyền trực tiếp vào đây
-                headless=not visualize,
-                use_subprocess=True,
-                version_main=150
-            )
+        # 2. HÀM TẠO OPTIONS (Tái sử dụng cho cả UC lẫn Standard)
+        def _build_options(is_standard=False):
+            if is_standard:
+                options = StandardOptions()
+                options.add_argument(f"--user-data-dir={profile_path}")
+                options.add_argument(
+                    "--disable-blink-features=AutomationControlled"
+                )
+            else:
+                options = uc.ChromeOptions()
 
-        # 3. TIÊM GIẢ LẬP CLIENT HINTS (VÁ LỖI HEADERS BỊ BẮT BOT)
+            if ua:
+                options.add_argument(f"--user-agent={ua}")
+            if proxy:
+                options.add_argument(f"--proxy-server={proxy}")
+
+            # Tối ưu tài nguyên & Anti-Throttling
+            options.add_argument("--disable-gpu")
+            options.add_argument("--disable-software-rasterizer")
+            options.add_argument("--no-sandbox")
+            options.add_argument("--disable-dev-shm-usage")
+            options.add_argument("--disable-notifications")
+            options.add_argument("--disable-logging")
+            options.add_argument("--disable-background-timer-throttling")
+            options.add_argument("--disable-backgrounding-occluded-windows")
+            options.add_argument("--disable-renderer-backgrounding")
+
+            # Tắt hình ảnh
+            prefs = {"profile.managed_default_content_settings.images": 2}
+            options.add_experimental_option("prefs", prefs)
+
+            # Headless/UI
+            if not visualize:
+                options.add_argument("--window-size=1920,1080")
+                if is_standard:
+                    options.add_argument("--headless=new")
+            else:
+                options.add_argument("--start-maximized")
+
+            return options
+
+        # 3. KHỞI TẠO DRIVER (CÓ THÊM LUỒNG FALLBACK)
+        self.driver = None
+
+        if mode == "undetected":
+            try:
+                print(f"[{uid}] [uc.Selenium] Đang thử khởi tạo Undetected ChromeDriver...")
+                uc_options = _build_options(is_standard=False)
+                self.driver = uc.Chrome(
+                    options=uc_options,
+                    user_data_dir=profile_path,
+                    headless=not visualize,
+                    use_subprocess=True,
+                    version_main=150
+                )
+            except Exception as e:
+                print(f"[{uid}] ⚠️ [uc.Selenium] Khởi tạo thất bại ({e}).")
+                print(f"[{uid}] 🔄 Đang tự động chuyển sang (Fallback) Selenium Standard...")
+                mode = "standard"  # Chuyển mode về Standard để tiếp tục
+
+        # Nếu chọn Standard từ đầu HOẶC do Undetected bị lỗi văng xuống đây
+        if mode == "standard" and self.driver is None:
+            try:
+                print(f"[{uid}] [Selenium Standard] Đang khởi tạo Chế độ Chuẩn...")
+                std_options = _build_options(is_standard=True)
+                self.driver = webdriver.Chrome(options=std_options)
+            except Exception as e:
+                print(f"[{uid}] ❌ Lỗi khởi tạo cả Standard Driver: {e}")
+                return False
+
+        # 4. TRUY CẬP VÀ XỬ LÝ ĐĂNG NHẬP
         try:
-            self.driver.execute_cdp_cmd(
-                "Network.setUserAgentOverride",
-                {
-                    "userAgent": ua
-                    or "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36",
-                    "acceptLanguage": "en-US,en;q=0.9",
-                    "platform": "Windows",
-                    "userAgentMetadata": {
-                        "brands": [
-                            {"brand": "Not=A?Brand", "version": "99"},
-                            {"brand": "Google Chrome", "version": "151"},
-                            {"brand": "Chromium", "version": "151"},
-                        ],
-                        "fullVersionList": [
-                            {"brand": "Not=A?Brand", "version": "99.0.0.0"},
-                            {"brand": "Google Chrome", "version": "151.0.7922.109"},
-                            {"brand": "Chromium", "version": "151.0.7922.109"},
-                        ],
-                        "fullVersion": "151.0.7922.109",
-                        "platform": "Windows",
-                        "platformVersion": "10.0.0",
-                        "architecture": "x86",
-                        "model": "",
-                        "mobile": False,
-                        "bitness": "64",
-                    },
-                },
-            )
+            self.driver.get("https://www.facebook.com")
+            time.sleep(2)
+
+            # Ưu tiên kiểm tra phiên đăng nhập sẵn có trong Profile trước
+            if not self.is_logged_in():
+                print(f"[{uid}] Chưa đăng nhập từ Profile. Tiến hành nạp Cookie...")
+                _inject_cookies(self.driver, cookie_file_path)
+
+            # 5. XÁC MINH TRẠNG THÁI ĐĂNG NHẬP LẦN CUỐI
+            logged_in = self.is_logged_in()
+            if not logged_in:
+                print(f"[{uid}] Đăng nhập thất bại / Checkpoint!")
+                self.close()
+
+            return logged_in
+
         except Exception as e:
-            print(f"[{uid}] Warning: Không thể tiêm CDP Client Hints: {e}")
-
-        # 4. MỞ TRANG VÀ GỌI HÀM CON NẠP COOKIE (NẾU CẦN)
-        self.driver.get("https://www.facebook.com")
-        time.sleep(2)
-
-        _inject_cookies(self.driver, cookie_file_path)
-
-        # 5. XÁC MINH TRẠNG THÁI ĐĂNG NHẬP VÀ TRẢ VỀ KẾT QUẢ
-        logged_in = self.is_logged_in()
-        if not logged_in:
-            self.close()
-        return logged_in
+            print(f"[{uid}] ❌ Lỗi trong quá trình điều hướng/truy cập: {e}")
+            if self.driver:
+                self.close()
+            return False
 
 
     # -------------------------
@@ -786,8 +838,8 @@ class FacebookBot:
             print(f"\n[HOÀN THÀNH] Đã cào TẤT CẢ {len(collected_uids)} UIDs trong nhóm!")
 
         # Xuất kết quả
-        #convert_to_spreadsheet(f"data/{group_id}.jsonl", f"{group_id}.xlsx")
-        #convert_to_spreadsheet(f"data/{group_id}.jsonl", f"{group_id}.csv")
+        convert_to_spreadsheet(f"data\\raw\\{group_id}.jsonl", f"{group_id}.xlsx")
+        convert_to_spreadsheet(f"data\\raw\\{group_id}.jsonl", f"{group_id}.csv")
 
         return len(collected_uids)
 
@@ -862,7 +914,7 @@ class FacebookBot:
         if current_chunk:
             insert_to_editor(editor, current_chunk)
 
-    def send_message_via_uid(self, uid, content):
+    def send_message_via_uid(self, uid, content, image_paths=None):
         def human_delay(min_sec=0.5, max_sec=1.5):
             """Tạo khoảng trễ ngẫu nhiên mô phỏng sự suy nghĩ của người dùng"""
             time.sleep(random.uniform(min_sec, max_sec))

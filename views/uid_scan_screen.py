@@ -139,24 +139,6 @@ class UidScanScreen(tk.Frame):
         self.tree_results.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
 
-        # Thanh công cụ bên dưới bảng kết quả
-        footer_row = ttk.Frame(right_frame)
-        footer_row.pack(fill="x", pady=(10, 0))
-
-        # Bổ sung nút Xuất dữ liệu
-        ttk.Button(
-            footer_row,
-            text="💾 Xuất danh sách UID",
-            command=getattr(self, "export_results", lambda: None),
-        ).pack(side="left")
-
-        ttk.Button(
-            footer_row, text="🗑 Clear kết quả", command=self.clear_results
-        ).pack(side="right")
-
-        if hasattr(self, "refresh_groups_preview"):
-            self.refresh_groups_preview()
-
     def get_source_groups(self):
         groups = getattr(self.controller, "groups_data", []) or []
         if self.chk_only_selected_var.get():
@@ -188,12 +170,6 @@ class UidScanScreen(tk.Frame):
         })
         self.tree_results.insert("", "end", values=(group_name, group_id, count_display, status))
 
-    def clear_results(self):
-        self.scan_results.clear()
-        for item in self.tree_results.get_children():
-            self.tree_results.delete(item)
-        self.set_status("Đã xóa danh sách kết quả", color="gray")
-
     def stop_uid_scan(self):
         """Hàm xử lý khi người dùng ấn nút Dừng"""
         self.stop_event.set()
@@ -203,7 +179,7 @@ class UidScanScreen(tk.Frame):
     # =========================================================================
     # LOGIC CHẠY TỰ ĐỘNG VỚI SELENIUM THREADING
     # =========================================================================
-    def handle_save_batch(self, batch_data, file_name="output.jsonl", folder_path="data"):
+    def handle_save_batch(self, batch_data, file_name="output.jsonl", folder_path="data\\raw"):
         """
         Hàm lưu dữ liệu vào thư mục chỉ định.
         Tự động tạo thư mục nếu chưa có.
@@ -271,7 +247,7 @@ class UidScanScreen(tk.Frame):
         try:
             # Khởi tạo FacebookBot
             bot_obj = bot.FacebookBot(
-                self.controller.is_demo_mode, 
+                visualize=self.controller.is_demo_mode, 
                 on_save_batch=self.handle_save_batch
             )
             bot_obj.stop_event = self.stop_event
