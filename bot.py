@@ -914,7 +914,7 @@ class FacebookBot:
         if current_chunk:
             insert_to_editor(editor, current_chunk)
 
-    def send_message_via_uid(self, uid, content, image_paths=None):
+    def send_message_via_uid(self, uid, content, image_paths=None, typing_delay_range=None):
         def human_delay(min_sec=0.5, max_sec=1.5):
             """Tạo khoảng trễ ngẫu nhiên mô phỏng sự suy nghĩ của người dùng"""
             time.sleep(random.uniform(min_sec, max_sec))
@@ -1056,6 +1056,8 @@ class FacebookBot:
                 human_delay(0.3, 0.7)
                 
                 self.type_content_to_editor(chatbox, content)
+                if typing_delay_range:
+                    human_delay(*typing_delay_range)
                 print("[+] Đã nhập tin nhắn")
                 human_delay(0.5, 1.2) # Do dự một chút trước khi bấm gửi
 

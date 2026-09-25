@@ -63,12 +63,39 @@ class App(tk.Tk):
 
   # ---
 
+  @staticmethod
+  def _normalize_saved_groups_data(raw_data: object) -> dict:
+    """Chuẩn hóa dữ liệu groups_saved.json về dạng {uid: {"groups": [...]}}."""
+    if isinstance(raw_data, dict):
+      entries = [raw_data]
+    elif isinstance(raw_data, list):
+      entries = raw_data
+    else:
+      return {}
+
+    normalized_data = {}
+    for entry in entries:
+      if not isinstance(entry, dict):
+        continue
+
+      for uid, payload in entry.items():
+        if not isinstance(payload, dict):
+          continue
+
+        groups = payload.get("groups", [])
+        normalized_data[str(uid)] = {
+          "groups": groups if isinstance(groups, list) else []
+        }
+
+    return normalized_data
+
   def load_data(self) -> list:
     """Đọc dữ liệu của User chỉ trong 1 dòng"""
     try:
         self.screens["Quét UID"].refresh_groups_preview()
         with open("groups_saved.json", "r", encoding="utf-8") as f:
-            data = json.load(f)
+            raw_data = json.load(f)
+            data = self._normalize_saved_groups_data(raw_data)
             # Lấy trực tiếp groups của uid, nếu không có trả về []
             return data.get(str(self.uid), {}).get("groups", [])
     except Exception:
@@ -84,13 +111,15 @@ class App(tk.Tk):
 
       # 1. Đọc file cũ
       if os.path.exists(file_path):
-          try:
-              with open(file_path, "r", encoding="utf-8") as f:
-                  data = json.load(f)
-          except Exception:
-              data = {}
+           try:
+               with open(file_path, "r", encoding="utf-8") as f:
+                   data = self._normalize_saved_groups_data(json.load(f))
+           except Exception:
+               data = {}
 
-      # 2. Cập nhật hoặc thêm mới User trực tiếp
+      data = self._normalize_saved_groups_data(data)
+
+       # 2. Cập nhật hoặc thêm mới User trực tiếp
       data[str(self.uid)] = {"groups": self.groups_data}
 
       # 3. Ghi lại file

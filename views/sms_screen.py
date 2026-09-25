@@ -1,5 +1,7 @@
 import csv
+import random
 import threading
+import time
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
@@ -36,7 +38,7 @@ class SmsScreen(tk.Frame):
 		self.var_use_ai = tk.BooleanVar(value=True)
 		chk_ai = ttk.Checkbutton(
 			ai_frame,
-			text="Bật AI Rewriter (Chống Spam FB)",
+			text="Viết lại bằng AI",
 			variable=self.var_use_ai,
 		)
 		chk_ai.grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 6))
@@ -342,7 +344,7 @@ class SmsScreen(tk.Frame):
 	def start_screen_2(self):
 		# Lấy dữ liệu từ giao diện tại luồng chính trước khi truyền vào Thread
 		content = self.txt_content.get("1.0", tk.END).strip()
-		uid = self.controller.ent_uid_shared.get()
+		uid = self.controller.ent_uid_shared.get().strip()
 
 		if uid == self.controller.empty_uid:
 			messagebox.showerror("Lỗi", "Không có tài khoản để chạy!")
@@ -356,26 +358,56 @@ class SmsScreen(tk.Frame):
 			messagebox.showerror("Lỗi", "Không có nội dung!")
 			return
 
-		self.btn_start.config(state=tk.DISABLED, text="Đang chạy...")
 		# daemon=True để khi tắt app tkinter thì tiến trình Selenium này cũng tự tắt theo
+		try:
+			delay_min = float(self.ent_delay_min.get().strip())
+			delay_max = float(self.ent_delay_max.get().strip())
+			typing_min = float(self.ent_typing_min.get().strip())
+			typing_max = float(self.ent_typing_max.get().strip())
+			if min(delay_min, delay_max, typing_min, typing_max) < 0:
+				raise ValueError
+			if delay_min > delay_max or typing_min > typing_max:
+				raise ValueError
+		except ValueError:
+			messagebox.showerror("Lỗi", "Delay phải là số không âm và giá trị đầu không được lớn hơn giá trị cuối.")
+			return
+
+		settings = {
+			"use_ai": self.var_use_ai.get(),
+			"ai_note": self.ent_ai_note.get().strip(),
+			"api_key": self.ent_api_key.get().strip(),
+			"custom_prompt": self.ent_custom_prompt.get().strip() or None,
+			"model_name": self.cbo_model.get(),
+			"image_paths": self.ent_image_path.get().strip(),
+			"delay_min": delay_min,
+			"delay_max": delay_max,
+			"typing_min": typing_min,
+			"typing_max": typing_max,
+			"user_agent": self.controller.get_user_agent(),
+		}
+		users = list(self.user_list)
+		self.btn_start.config(state=tk.DISABLED, text="Đang chạy...")
+		self.progress.config(value=0)
+
 		selenium_thread = threading.Thread(
 			target=self.run_selenium_process_s2,
-			args=(uid, content),
+			args=(uid, content, users, settings),
 			daemon=True,
 		)
 		selenium_thread.start()
 
-	def run_selenium_process_s2(self, user, content):
+	def run_selenium_process_s2(self, user, content, users, settings):
 		print(
 			f"\n[Selenium Màn 2] Đang khởi chạy tiến trình ngầm cho UID:"
 			f" {user}..."
 		)
 
+		obj = None
 		try:
 			obj = bot.FacebookBot(self.controller.is_demo_mode)
-			obj.user_agent = self.controller.user_agent
+			obj.user_agent = settings["user_agent"]
 			success = obj.start_browser(
-				user, user_agent=self.controller.get_user_agent()
+				user, user_agent=settings["user_agent"]
 			)
 			if not success:
 				self.after(
@@ -384,22 +416,22 @@ class SmsScreen(tk.Frame):
 				return
 
 			# 1. Lấy thông số cấu hình AI từ giao diện
-			use_ai = self.var_use_ai.get()
-			ai_note = self.ent_ai_note.get().strip()
-			api_key = self.ent_api_key.get().strip()
-			custom_prompt = self.ent_custom_prompt.get().strip() or None
+			use_ai = settings["use_ai"]
+			ai_note = settings["ai_note"]
+			api_key = settings["api_key"]
+			custom_prompt = settings["custom_prompt"]
 
 			# Khởi tạo AI Rewriter nếu bật AI
 			rewriter = None
 			if use_ai and api_key and GeminiRewriter:
 				rewriter = GeminiRewriter(
-					api_key=api_key, model_name=self.cbo_model.get(),custom_instruction=custom_prompt
+					api_key=api_key, model_name=settings["model_name"],custom_instruction=custom_prompt
 				)
 
 			success_count = 0
-			total_users = len(self.user_list)
+			total_users = len(users)
 
-			raw_image_str = self.ent_image_path.get().strip()
+			raw_image_str = settings["image_paths"]
 			image_paths = (
 				[p.strip() for p in raw_image_str.split(";") if p.strip()]
 				if raw_image_str
@@ -410,7 +442,7 @@ class SmsScreen(tk.Frame):
 			valid_image_paths = [p for p in image_paths if os.path.exists(p)]
 
 			# 2. Vòng lặp gửi tin nhắn
-			for idx, user_data in enumerate(self.user_list):
+			for idx, user_data in enumerate(users):
 				# Trích xuất UID (xử lý cả trường hợp user_data là dict hoặc string)
 				target_uid = (
 					user_data.get("user_id", "")
@@ -431,13 +463,21 @@ class SmsScreen(tk.Frame):
 						msg_to_send = ai_variant  # Gán kết quả AI trả về
 
 				# Gửi tin nhắn qua Selenium
-				success = obj.send_message_via_uid(target_uid, msg_to_send, image_paths=valid_image_paths)
+				success = obj.send_message_via_uid(
+					target_uid,
+					msg_to_send,
+					image_paths=valid_image_paths,
+					typing_delay_range=(settings["typing_min"], settings["typing_max"]),
+				)
 				if success:
 					success_count += 1
 
 				# Cập nhật thanh Progressbar trên giao diện
 				progress_val = int(((idx + 1) / total_users) * 100)
 				self.after(0, lambda v=progress_val: self.progress.config(value=v))
+
+				if idx < total_users - 1:
+					time.sleep(random.uniform(settings["delay_min"], settings["delay_max"]))
 
 			# 3. Thông báo kết quả sau khi hoàn thành
 			self.after(
@@ -456,7 +496,8 @@ class SmsScreen(tk.Frame):
 				),
 			)
 		finally:
-			obj.close()
+			if obj:
+				obj.close()
 			self.after(
 				0,
 				lambda: self.btn_start.config(
