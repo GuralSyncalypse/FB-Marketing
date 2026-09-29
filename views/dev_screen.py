@@ -257,7 +257,8 @@ class DevelopScreen(tk.Frame):
             self.after(0, lambda: self.lbl_status.config(text="Trạng thái: Đang đăng nhập...", foreground="orange"))
             success = self.current_bot.start_browser(user, user_agent=self.controller.get_user_agent())
             if not success:
-                self.after(0, lambda: messagebox.showerror("Lỗi", "Đăng nhập thất bại!"))
+                error_message = self.current_bot.get_start_error_message()
+                self.after(0, lambda msg=error_message: messagebox.showerror("Lỗi", msg))
                 return
 
             # 3. Lấy danh sách Bài đăng (đã chọn) và Nhóm (đã chọn)
@@ -362,7 +363,11 @@ class DevelopScreen(tk.Frame):
                 self.after(0, lambda: self.lbl_status.config(text="Trạng thái: Lỗi hệ thống", foreground="red"))
                 self.after(0, lambda: messagebox.showerror("Lỗi", f"Lỗi tiến trình chính: {str(e)}"))
         finally:
-            self.current_bot.close()
+            if self.current_bot:
+                try:
+                    self.current_bot.close()
+                except Exception as close_error:
+                    print(f"[Dev Mode] Lỗi khi dọn dẹp bot: {close_error}")
             self.current_bot = None
             self.after(0, self.reset_ui_buttons)
 

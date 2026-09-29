@@ -17,6 +17,7 @@ import pickle
 import os
 import re
 import json
+import urllib.parse
 import pandas as pd
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__)) # Thư mục /app
@@ -145,16 +146,70 @@ def convert_to_spreadsheet(json_filepath, output_filename=None):
     )
 
 class FacebookBot:
-    def __init__(self, visualize=False, output_path="users.json", stop_event=None, on_save_batch=None):
+    _profile_locks = {}
+    _profile_locks_guard = threading.Lock()
+
+    def __init__(
+        self,
+        visualize=False,
+        output_path="users.json",
+        stop_event=None,
+        on_save_batch=None,
+        browser_mode="scan",
+    ):
         self.driver = None
         self.user_agent = None
         self.output_path = output_path
         self.stop_event = stop_event
 
         self.visualize = visualize
+        # `scan` giữ tối ưu hiện có; `analysis` ưu tiên trang Facebook hiển thị đủ.
+        self.browser_mode = "analysis" if browser_mode == "analysis" else "scan"
 
         self.on_save_batch = on_save_batch
         self._buffer = []
+        self._profile_lock = None
+        self._profile_uid = None
+        self.last_start_error = None
+
+    def _acquire_profile_lock(self, uid: str) -> bool:
+        """Chỉ cho phép một browser session dùng cùng profile UID trong một app."""
+        normalized_uid = str(uid).strip()
+        if not normalized_uid:
+            print("[Profile Lock] Invalid UID.")
+            return False
+
+        with self._profile_locks_guard:
+            lock = self._profile_locks.setdefault(normalized_uid, threading.Lock())
+
+        if not lock.acquire(blocking=False):
+            print(f"[{normalized_uid}] [Profile Lock] UID is already in use.")
+            return False
+
+        self._profile_lock = lock
+        self._profile_uid = normalized_uid
+        return True
+
+    def _release_profile_lock(self):
+        """Nhả profile lock do chính instance bot này sở hữu."""
+        lock = self._profile_lock
+        uid = self._profile_uid
+        self._profile_lock = None
+        self._profile_uid = None
+
+        if lock:
+            try:
+                lock.release()
+                print(f"[{uid}] [Profile Lock] Released.")
+            except RuntimeError:
+                pass
+
+    def get_start_error_message(self) -> str:
+        if self.last_start_error == "profile_in_use":
+            return "UID đang có tác vụ khác. Vui lòng chờ tác vụ hiện tại hoàn tất."
+        if self.last_start_error == "invalid_uid":
+            return "UID không hợp lệ."
+        return "Đăng nhập thất bại!"
 
     def _flush(self, file_name=None):
         """Gửi dữ liệu trong buffer đi lưu và xả rỗng buffer."""
@@ -199,6 +254,15 @@ class FacebookBot:
         driver_type: str = "undetected",
     ) -> bool:
         """Khởi tạo Driver (UC với Fallback về Standard) tích hợp tối ưu tốc độ, Profile cách ly và nạp Cookie chuẩn xác."""
+
+        uid = str(uid).strip()
+        self.last_start_error = None
+        if not uid:
+            self.last_start_error = "invalid_uid"
+            return False
+        if not self._acquire_profile_lock(uid):
+            self.last_start_error = "profile_in_use"
+            return False
 
         # --- HÀM CON XỬ LÝ NẠP COOKIE ---
         def _inject_cookies(driver_instance, file_path):
@@ -286,8 +350,11 @@ class FacebookBot:
             options.add_argument("--disable-backgrounding-occluded-windows")
             options.add_argument("--disable-renderer-backgrounding")
 
-            # Tắt hình ảnh
-            prefs = {"profile.managed_default_content_settings.images": 2}
+            # Tác vụ tự động không cần media để giảm băng thông/RAM. Giá trị
+            # này được Chrome lưu vào profile, vì vậy analysis phải ghi đè rõ
+            # về 1 thay vì chỉ bỏ qua preference.
+            image_setting = 2 if self.browser_mode == "scan" else 1
+            prefs = {"profile.managed_default_content_settings.images": image_setting}
             options.add_experimental_option("prefs", prefs)
 
             # Headless/UI
@@ -327,6 +394,8 @@ class FacebookBot:
                 self.driver = webdriver.Chrome(options=std_options)
             except Exception as e:
                 print(f"[{uid}] ❌ Lỗi khởi tạo cả Standard Driver: {e}")
+                self.last_start_error = "browser_start_failed"
+                self._release_profile_lock()
                 return False
 
         # 4. TRUY CẬP VÀ XỬ LÝ ĐĂNG NHẬP
@@ -343,14 +412,15 @@ class FacebookBot:
             logged_in = self.is_logged_in()
             if not logged_in:
                 print(f"[{uid}] Đăng nhập thất bại / Checkpoint!")
+                self.last_start_error = "login_failed"
                 self.close()
 
             return logged_in
 
         except Exception as e:
             print(f"[{uid}] ❌ Lỗi trong quá trình điều hướng/truy cập: {e}")
-            if self.driver:
-                self.close()
+            self.last_start_error = "browser_navigation_failed"
+            self.close()
             return False
 
 
@@ -843,16 +913,100 @@ class FacebookBot:
 
         return len(collected_uids)
 
+    def prepare_post_scan_analysis(
+        self,
+        scope: str,
+        keyword: str = "",
+        group_ids=None,
+        pause_seconds: int = 1800,
+    ) -> dict:
+        """Mở phạm vi quét bài và giữ browser để phân tích thủ công Facebook.
+
+        `scope="search"` mở Facebook Search theo từ khóa (phạm vi rộng).
+        `scope="groups"` mở group đầu tiên trong danh sách (phạm vi hẹp).
+        Hàm chưa trích xuất bài viết; đây là bước chuẩn bị để xác định selector
+        và request phù hợp trước khi tích hợp crawler.
+        """
+        if not self.driver:
+            raise RuntimeError("Browser chưa được khởi tạo.")
+
+        normalized_scope = str(scope).strip().lower()
+        normalized_groups = [
+            str(group_id).strip()
+            for group_id in (group_ids or [])
+            if str(group_id).strip()
+        ]
+
+        if normalized_scope == "search":
+            normalized_keyword = keyword.strip()
+            if not normalized_keyword:
+                raise ValueError("Search tổng quát yêu cầu từ khóa.")
+            target_url = (
+                "https://www.facebook.com/search/posts/?q="
+                f"{urllib.parse.quote_plus(normalized_keyword)}"
+            )
+            source_label = f"search:{normalized_keyword}"
+        elif normalized_scope == "groups":
+            if not normalized_groups:
+                raise ValueError("Quét theo group yêu cầu ít nhất một group ID.")
+            target_url = f"https://www.facebook.com/groups/{normalized_groups[0]}"
+            source_label = f"group:{normalized_groups[0]}"
+        else:
+            raise ValueError("Phạm vi quét không hợp lệ.")
+
+        self.driver.get(target_url)
+        wait_seconds = max(0, int(pause_seconds))
+        deadline = time.monotonic() + wait_seconds
+        print(
+            f"[Post Scan] Opened {source_label}. "
+            f"Manual analysis pause: {wait_seconds} seconds."
+        )
+
+        while time.monotonic() < deadline:
+            if self.is_stopped():
+                print("[Post Scan] Manual analysis stopped.")
+                return {
+                    "status": "stopped",
+                    "scope": normalized_scope,
+                    "source": source_label,
+                    "url": target_url,
+                }
+            try:
+                # Khi người dùng đóng Chrome bằng tay, Selenium vẫn giữ object
+                # driver nhưng mọi lệnh tới session sẽ ném WebDriverException.
+                if not self.driver.window_handles:
+                    raise WebDriverException("Browser window is closed.")
+            except (WebDriverException, OSError):
+                print("[Post Scan] Browser was closed manually.")
+                return {
+                    "status": "browser_closed",
+                    "scope": normalized_scope,
+                    "source": source_label,
+                    "url": target_url,
+                }
+            time.sleep(min(1, deadline - time.monotonic()))
+
+        print("[Post Scan] Manual analysis pause completed.")
+        return {
+            "status": "ready_for_extraction",
+            "scope": normalized_scope,
+            "source": source_label,
+            "url": target_url,
+        }
+
     # -------------------------
 
     def close(self):
         """Hàm đóng trình duyệt an toàn"""
-        if self.driver:
-            try:
-                self.driver.quit()
-            except Exception:
-                pass
-            self.driver = None
+        try:
+            if self.driver:
+                try:
+                    self.driver.quit()
+                except Exception:
+                    pass
+                self.driver = None
+        finally:
+            self._release_profile_lock()
 
     def type_content_to_editor(self, editor, content):
         def insert_to_editor(editor, text):

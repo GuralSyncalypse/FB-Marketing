@@ -26,8 +26,36 @@ class SmsScreen(tk.Frame):
 		self.parent.rowconfigure(0, weight=1)
 
 		# ================= CỘT BÊN TRÁI: CẤU HÌNH =================
-		left_frame = ttk.LabelFrame(self.parent, text=" Cấu hình ", padding=12)
-		left_frame.grid(row=0, column=0, sticky="nsew", padx=(10, 5), pady=10)
+		left_container = ttk.Frame(self.parent)
+		left_container.grid(row=0, column=0, sticky="nsew", padx=(10, 5), pady=10)
+		left_container.rowconfigure(0, weight=1)
+		left_container.columnconfigure(0, weight=1)
+
+		config_canvas = tk.Canvas(left_container, highlightthickness=0, borderwidth=0)
+		config_scrollbar = ttk.Scrollbar(
+			left_container, orient="vertical", command=config_canvas.yview
+		)
+		config_canvas.configure(yscrollcommand=config_scrollbar.set)
+		config_canvas.grid(row=0, column=0, sticky="nsew")
+		config_scrollbar.grid(row=0, column=1, sticky="ns")
+
+		left_frame = ttk.LabelFrame(config_canvas, text=" Cấu hình ", padding=12)
+		config_window = config_canvas.create_window(
+			(0, 0), window=left_frame, anchor="nw"
+		)
+
+		def update_config_scroll_region(event=None):
+			config_canvas.configure(scrollregion=config_canvas.bbox("all"))
+
+		def fit_config_width(event):
+			config_canvas.itemconfigure(config_window, width=event.width)
+
+		def scroll_config(event):
+			config_canvas.yview_scroll(-int(event.delta / 120), "units")
+
+		left_frame.bind("<Configure>", update_config_scroll_region)
+		config_canvas.bind("<Configure>", fit_config_width)
+		config_canvas.bind("<MouseWheel>", scroll_config)
 
 		# --- 1. CẤU HÌNH AI REWRITER ---
 		ai_frame = ttk.LabelFrame(left_frame, text=" Cấu hình AI ", padding=10)
@@ -167,12 +195,15 @@ class SmsScreen(tk.Frame):
 			row=1, column=4, sticky="w", pady=2
 		)
 
-		# --- 5. TIẾN TRÌNH & NÚT CHẠY ---
-		self.progress = ttk.Progressbar(left_frame, mode="determinate")
-		self.progress.pack(fill="x", pady=(4, 8))
+		# --- 5. TIẾN TRÌNH & NÚT CHẠY (cố định ở đáy cột) ---
+		footer_frame = ttk.Frame(left_container, padding=(12, 8, 12, 0))
+		footer_frame.grid(row=1, column=0, columnspan=2, sticky="ew")
+
+		self.progress = ttk.Progressbar(footer_frame, mode="determinate")
+		self.progress.pack(fill="x", pady=(0, 8))
 
 		self.btn_start = ttk.Button(
-			left_frame, text="Chạy tiến trình", command=self.start_screen_2
+			footer_frame, text="Chạy tiến trình", command=self.start_screen_2
 		)
 		self.btn_start.pack(fill="x", ipady=4)
 
@@ -410,8 +441,9 @@ class SmsScreen(tk.Frame):
 				user, user_agent=settings["user_agent"]
 			)
 			if not success:
+				error_message = obj.get_start_error_message()
 				self.after(
-					0, lambda: messagebox.showerror("Lỗi", "Đăng nhập thất bại!")
+					0, lambda msg=error_message: messagebox.showerror("Lỗi", msg)
 				)
 				return
 

@@ -210,7 +210,9 @@ class UidScanScreen(tk.Frame):
         user_id = self.controller.get_uid()
 
         if not self.controller.has_uid:
-            messagebox.showerror("Lỗi", "Vui lòng nhập/chọn tài khoản trước khi quét!")
+            messagebox.showerror(
+                "Lỗi", "Vui lòng kết nối Extension để nhận tài khoản trước khi quét!"
+            )
             return
 
         # 2. Lấy danh sách nhóm cần quét
@@ -224,6 +226,10 @@ class UidScanScreen(tk.Frame):
 
         # Reset cờ dừng
         self.stop_event.clear()
+        self.scan_results.clear()
+        self.tree_results.delete(*self.tree_results.get_children())
+        max_members = self.spin_max_members_var.get()
+        retries = self.spin_retries_var.get()
 
         # 3. Vô hiệu hóa nút Bắt đầu & Kích hoạt nút Dừng
         self.btn_start.config(state=tk.DISABLED, text="Đang quét...")
@@ -233,16 +239,17 @@ class UidScanScreen(tk.Frame):
         # 4. Tạo thread chạy Selenium ngầm (daemon=True)
         scan_thread = threading.Thread(
             target=self.run_selenium_scan_process,
-            args=(user_id, source_groups),
+            args=(user_id, source_groups, max_members, retries),
             daemon=True
         )
         scan_thread.start()
 
-    def run_selenium_scan_process(self, user, target_groups):
+    def run_selenium_scan_process(self, user, target_groups, max_members, retries):
         """Hàm thực thi logic Selenium chạy ngầm trong Thread."""
         print(f"\n[Selenium Quét UID] Bắt đầu tiến trình cho UID: {user}...")
         total_found = 0
         total_groups = len(target_groups)
+        bot_obj = None
 
         try:
             # Khởi tạo FacebookBot
@@ -257,7 +264,8 @@ class UidScanScreen(tk.Frame):
 
             # Đăng nhập bằng Cookies
             if not bot_obj.start_browser(user, user_agent=self.controller.get_user_agent(), driver_type="undetected"):
-                self.after(0, lambda: messagebox.showerror("Lỗi", "Đăng nhập thất bại!"))
+                error_message = bot_obj.get_start_error_message()
+                self.after(0, lambda msg=error_message: messagebox.showerror("Lỗi", msg))
                 return
 
             # Lặp qua từng Group
@@ -279,8 +287,8 @@ class UidScanScreen(tk.Frame):
 
                     members = bot_obj.scrape_group_members(
                         group_id=group_id, 
-                        max_members=self.spin_max_members_var.get(), 
-                        retries=self.spin_retries_var.get()
+                        max_members=max_members,
+                        retries=retries
                     )
 
                     group_count = members

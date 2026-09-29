@@ -1,6 +1,7 @@
 import json
 import os
 import threading
+from queue import Empty, Queue
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 import urllib.parse
@@ -9,6 +10,7 @@ import bot
 from services.local_server import start_local_server
 from views.dev_screen import DevelopScreen
 from views.post_screen import PostScreen
+from views.post_scan_screen import PostScanScreen
 from views.sms_screen import SmsScreen
 from views.uid_scan_screen import UidScanScreen
 
@@ -30,6 +32,7 @@ class App(tk.Tk):
 
     # --- Khởi tạo dữ liệu ---
     self.has_uid = False
+    self._server_events = Queue()
     self.selected_files_s1 = []
     self.selected_files_s2 = []
 
@@ -46,6 +49,7 @@ class App(tk.Tk):
     self.__build_navigation_tabs()  # 2. Khu vực Notebook (Tab) chính
 
     # --- Khởi chạy dịch vụ ngầm ---
+    self.after(100, self._process_server_events)
     start_local_server(
         port=8000,
         on_uid_received_callback=self.on_server_received
@@ -131,9 +135,12 @@ class App(tk.Tk):
     print("Đang lưu trạng thái ứng dụng...")
 
     # Pipeline 1: Lưu dữ liệu nhóm hiện tại của User
-    self.save_data()
-    
-    self.destroy()  # Giải phóng giao diện và thoát hẳn
+    try:
+      self.save_data()
+    except Exception as e:
+      print(f"Không thể lưu trạng thái ứng dụng: {e}")
+    finally:
+      self.destroy()  # Giải phóng giao diện và thoát hẳn
 
   # ================= THÊM THANH MENU BAR (TASKBAR) =================
   def __build_menu(self):
@@ -223,6 +230,7 @@ class App(tk.Tk):
     )
     self.ent_uid_shared.grid(row=0, column=1, sticky="w", pady=5, padx=(0, 20))
     self.ent_uid_shared.insert(0, self.empty_uid)
+    self.ent_uid_shared.config(state="readonly")
 
     # --- Cụm User Agent ---
     ttk.Label(top_shared_frame, text="User Agent:").grid(
@@ -440,13 +448,15 @@ class App(tk.Tk):
     def handle_scan():
         if not self.has_uid:
             messagebox.showwarning(
-                "Cảnh báo", "Vui lòng nhập/chọn UID trước khi quét!"
+                "Cảnh báo", "Vui lòng kết nối Extension để nhận UID trước khi quét!"
             )
             return
 
         btn_scan.config(state="disabled", text="Đang quét...")
 
         def local_refresh():
+            if not groups_win.winfo_exists():
+                return
             refresh_tree()
             self.lbl_group_count_var.set(
                 f"Đã quét: {len(self.groups_data)} groups"
@@ -457,7 +467,12 @@ class App(tk.Tk):
                 f"Đã cập nhật {len(self.groups_data)} nhóm thành công!",
             )
 
+        def reset_scan_button():
+            if groups_win.winfo_exists():
+                btn_scan.config(state="normal", text="Quét")
+
         self._trigger_ui_refresh = local_refresh
+        self._reset_group_scan_button = reset_scan_button
         self.scan_groups()
 
     def save_and_close():
@@ -493,7 +508,7 @@ class App(tk.Tk):
       if current_index == 0:
           # Code khi ở Tab 1
           pass
-      elif tab_title == "Quét UID":
+      elif tab_title in ("Quét UID", "Quét bài"):
           self.screens[tab_title].refresh_groups_preview()
 
 
@@ -505,6 +520,7 @@ class App(tk.Tk):
         ("Đăng bài", PostScreen),
         ("Bắn SMS", SmsScreen),
         ("Quét UID", UidScanScreen),
+        ("Quét bài", PostScanScreen),
     ]
 
     self.tabs = []
@@ -537,12 +553,29 @@ class App(tk.Tk):
       self.popup_refresh_func()
 
   def on_server_received(self, data: dict):
+    """Nhận dữ liệu từ HTTP server mà không thao tác Tkinter ở server thread."""
+    self._server_events.put(data)
+
+  def _process_server_events(self):
+    """Xử lý dữ liệu server trên main thread của Tkinter."""
+    try:
+      while True:
+        self._apply_server_received(self._server_events.get_nowait())
+    except Empty:
+      pass
+
+    if self.winfo_exists():
+      self.after(100, self._process_server_events)
+
+  def _apply_server_received(self, data: dict):
     self.uid = data.get("uid", "")
     self.cookies = data.get("cookies", [])
     self.user_agent = data.get("user_agent", "")
 
+    self.ent_uid_shared.config(state="normal")
     self.ent_uid_shared.delete(0, tk.END)
     self.ent_uid_shared.insert(0, self.uid)
+    self.ent_uid_shared.config(state="readonly")
 
     self.ent_ua.delete(0, tk.END)
     self.ent_ua.insert(0, self.user_agent)
@@ -574,7 +607,8 @@ class App(tk.Tk):
             uid=user, user_agent=self.user_agent
         )
         if not success:
-          self.after(0, lambda: messagebox.showerror("Lỗi", "Đăng nhập thất bại!"))
+          error_message = worker.get_start_error_message()
+          self.after(0, lambda msg=error_message: messagebox.showerror("Lỗi", msg))
           return
         
         results = worker.scrape_joined_groups()
@@ -604,6 +638,9 @@ class App(tk.Tk):
     finally:
         if worker:
             worker.close()
+        reset_scan_button = getattr(self, "_reset_group_scan_button", None)
+        if callable(reset_scan_button):
+            self.after(0, reset_scan_button)
 
 
 if __name__ == "__main__":

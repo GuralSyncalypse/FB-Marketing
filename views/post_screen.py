@@ -168,7 +168,8 @@ class PostScreen(tk.Frame):
 
             success = driver.start_browser(uid, user_agent=self.controller.get_user_agent())
             if not success:
-                self.after(0, lambda: messagebox.showerror("Lỗi", "Đăng nhập thất bại!"))
+                error_message = driver.get_start_error_message()
+                self.after(0, lambda msg=error_message: messagebox.showerror("Lỗi", msg))
                 return
 
             total_groups = len(selected_groups)
