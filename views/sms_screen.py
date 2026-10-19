@@ -1,22 +1,34 @@
 import csv
+import os
 import random
 import threading
 import time
+
+import customtkinter as ctk
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox
 
 import bot
-import os
 from services.gemini_writer import GeminiRewriter
+from services.ui_theme import (
+	BG_PANEL,
+	INFO_COLOR,
+	SELECT_COLOR,
+	TEXT,
+	TEXT_MUTED,
+	TitledFrame,
+	apply_theme,
+)
 
 
-class SmsScreen(tk.Frame):
+class SmsScreen(ctk.CTkFrame):
 
 	def __init__(self, parent, controller):
 		super().__init__(parent)
 		self.parent = parent
 		self.controller = controller
 		self.user_list = []
+		apply_theme()
 		self._build_ui()
 
 	def _build_ui(self):
@@ -26,69 +38,55 @@ class SmsScreen(tk.Frame):
 		self.parent.rowconfigure(0, weight=1)
 
 		# ================= CỘT BÊN TRÁI: CẤU HÌNH =================
-		left_container = ttk.Frame(self.parent)
+		left_container = ctk.CTkFrame(self.parent, fg_color="transparent")
 		left_container.grid(row=0, column=0, sticky="nsew", padx=(10, 5), pady=10)
 		left_container.rowconfigure(0, weight=1)
 		left_container.columnconfigure(0, weight=1)
 
-		config_canvas = tk.Canvas(left_container, highlightthickness=0, borderwidth=0)
-		config_scrollbar = ttk.Scrollbar(
-			left_container, orient="vertical", command=config_canvas.yview
+		# CTkScrollableFrame thay cho Canvas + Scrollbar + LabelFrame thủ công
+		config_scroll = ctk.CTkScrollableFrame(
+			left_container,
+			label_text=" Cấu hình ",
+			label_anchor="w",
+			label_fg_color=BG_PANEL,
+			fg_color=BG_PANEL,
+			corner_radius=10,
 		)
-		config_canvas.configure(yscrollcommand=config_scrollbar.set)
-		config_canvas.grid(row=0, column=0, sticky="nsew")
-		config_scrollbar.grid(row=0, column=1, sticky="ns")
-
-		left_frame = ttk.LabelFrame(config_canvas, text=" Cấu hình ", padding=12)
-		config_window = config_canvas.create_window(
-			(0, 0), window=left_frame, anchor="nw"
-		)
-
-		def update_config_scroll_region(event=None):
-			config_canvas.configure(scrollregion=config_canvas.bbox("all"))
-
-		def fit_config_width(event):
-			config_canvas.itemconfigure(config_window, width=event.width)
-
-		def scroll_config(event):
-			config_canvas.yview_scroll(-int(event.delta / 120), "units")
-
-		left_frame.bind("<Configure>", update_config_scroll_region)
-		config_canvas.bind("<Configure>", fit_config_width)
-		config_canvas.bind("<MouseWheel>", scroll_config)
+		config_scroll.grid(row=0, column=0, sticky="nsew")
 
 		# --- 1. CẤU HÌNH AI REWRITER ---
-		ai_frame = ttk.LabelFrame(left_frame, text=" Cấu hình AI ", padding=10)
+		ai_frame = TitledFrame(config_scroll, title=" Cấu hình AI ")
 		ai_frame.pack(fill="x", pady=(0, 8))
-		ai_frame.columnconfigure(1, weight=1)
+		ai_body = ai_frame.body
+		ai_body.columnconfigure(1, weight=1)
 
 		# Checkbox bật/tắt AI
 		self.var_use_ai = tk.BooleanVar(value=True)
-		chk_ai = ttk.Checkbutton(
-			ai_frame,
+		chk_ai = ctk.CTkCheckBox(
+			ai_body,
 			text="Viết lại bằng AI",
 			variable=self.var_use_ai,
 		)
 		chk_ai.grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 6))
 
 		# API Key
-		ttk.Label(ai_frame, text="API Key:").grid(
+		ctk.CTkLabel(ai_body, text="API Key:").grid(
 			row=1, column=0, sticky="w", padx=(0, 5), pady=3
 		)
-		self.ent_api_key = ttk.Entry(ai_frame, show="*")
+		self.ent_api_key = ctk.CTkEntry(ai_body, show="*")
 		self.ent_api_key.grid(row=1, column=1, sticky="ew", padx=(0, 5), pady=3)
 
-		self.btn_check_key = ttk.Button(
-			ai_frame, text="Kiểm tra", width=10, command=self.check_api_key
+		self.btn_check_key = ctk.CTkButton(
+			ai_body, text="Kiểm tra", width=80, command=self.check_api_key
 		)
 		self.btn_check_key.grid(row=1, column=2, sticky="e", pady=3)
 
 		# Model AI
-		ttk.Label(ai_frame, text="Model AI:").grid(
+		ctk.CTkLabel(ai_body, text="Model AI:").grid(
 			row=2, column=0, sticky="w", padx=(0, 5), pady=3
 		)
-		self.cbo_model = ttk.Combobox(
-			ai_frame,
+		self.cbo_model = ctk.CTkComboBox(
+			ai_body,
 			values=[
 				"gemini-3.5-flash-lite",
 				"gemini-1.5-flash",
@@ -102,157 +100,168 @@ class SmsScreen(tk.Frame):
 		)
 
 		# Custom Prompt
-		ttk.Label(ai_frame, text="Custom Prompt:").grid(
+		ctk.CTkLabel(ai_body, text="Custom Prompt:").grid(
 			row=3, column=0, sticky="w", padx=(0, 5), pady=3
 		)
-		self.ent_custom_prompt = ttk.Entry(ai_frame)
+		self.ent_custom_prompt = ctk.CTkEntry(ai_body)
 		self.ent_custom_prompt.grid(
 			row=3, column=1, columnspan=2, sticky="ew", pady=3
 		)
 
 		# Ghi chú AI
-		ttk.Label(ai_frame, text="Ghi chú AI:").grid(
+		ctk.CTkLabel(ai_body, text="Ghi chú AI:").grid(
 			row=4, column=0, sticky="w", padx=(0, 5), pady=3
 		)
-		self.ent_ai_note = ttk.Entry(ai_frame)
+		self.ent_ai_note = ctk.CTkEntry(ai_body)
 		self.ent_ai_note.grid(
 			row=4, column=1, columnspan=2, sticky="ew", pady=3
 		)
 
 		# --- 2. NỘI DUNG MẪU ---
-		content_frame = ttk.LabelFrame(
-			left_frame, text=" Nội dung mẫu ", padding=10
-		)
+		content_frame = TitledFrame(config_scroll, title=" Nội dung mẫu ")
 		content_frame.pack(fill="x", pady=(0, 8))
 
-		self.txt_content = tk.Text(content_frame, height=4, wrap="word", font=("Segoe UI", 9))
+		self.txt_content = ctk.CTkTextbox(
+			content_frame.body,
+			height=100,
+			wrap="word",
+			font=ctk.CTkFont(family="Segoe UI", size=12),
+		)
 		self.txt_content.pack(fill="x", pady=(0, 4))
 
-		ttk.Label(
-			content_frame,
+		ctk.CTkLabel(
+			content_frame.body,
 			text="💡 Nội dung trong ngoặc nhọn { } sẽ được giữ nguyên khi AI viết lại.",
-			font=("Segoe UI", 8, "italic"),
-			foreground="#0056b3",
+			font=ctk.CTkFont(size=11, slant="italic"),
+			text_color=INFO_COLOR,
+			anchor="w",
 		).pack(anchor="w")
 
 		# --- 3. ĐÍNH KÈM HÌNH ẢNH ---
-		img_frame = ttk.LabelFrame(
-			left_frame, text=" Đính kèm hình ảnh ", padding=10
-		)
+		img_frame = TitledFrame(config_scroll, title=" Đính kèm hình ảnh ")
 		img_frame.pack(fill="x", pady=(0, 8))
-		img_frame.columnconfigure(0, weight=1)
+		img_body = img_frame.body
+		img_body.columnconfigure(0, weight=1)
 
-		self.ent_image_path = ttk.Entry(img_frame)
+		self.ent_image_path = ctk.CTkEntry(img_body)
 		self.ent_image_path.grid(row=0, column=0, sticky="ew", padx=(0, 5))
 
-		btn_browse_img = ttk.Button(
-			img_frame, text="Chọn ảnh", width=9, command=self.browse_image
+		btn_browse_img = ctk.CTkButton(
+			img_body, text="Chọn ảnh", width=80, command=self.browse_image
 		)
 		btn_browse_img.grid(row=0, column=1, padx=(0, 3))
 
-		btn_clear_img = ttk.Button(
-			img_frame, text="Xóa", width=6, command=self.clear_image
+		btn_clear_img = ctk.CTkButton(
+			img_body, text="Xóa", width=60, command=self.clear_image
 		)
 		btn_clear_img.grid(row=0, column=2)
 
 		# --- 4. CẤU HÌNH DELAY (CHỐNG SPAM) ---
-		delay_frame = ttk.LabelFrame(
-			left_frame, text=" Cấu hình Delay (Giãn cách) ", padding=10
-		)
+		delay_frame = TitledFrame(config_scroll, title=" Cấu hình Delay (Giãn cách) ")
 		delay_frame.pack(fill="x", pady=(0, 8))
+		delay_body = delay_frame.body
 
 		# Chờ giữa 2 tin
-		ttk.Label(delay_frame, text="Chờ giữa 2 tin:").grid(
+		ctk.CTkLabel(delay_body, text="Chờ giữa 2 tin:").grid(
 			row=0, column=0, sticky="w", pady=2
 		)
-		self.ent_delay_min = ttk.Entry(delay_frame, width=6, justify="center")
+		self.ent_delay_min = ctk.CTkEntry(delay_body, width=70, justify="center")
 		self.ent_delay_min.insert(0, "30")
 		self.ent_delay_min.grid(row=0, column=1, padx=4, pady=2)
 
-		ttk.Label(delay_frame, text="đến").grid(row=0, column=2, pady=2)
-		self.ent_delay_max = ttk.Entry(delay_frame, width=6, justify="center")
+		ctk.CTkLabel(delay_body, text="đến").grid(row=0, column=2, pady=2)
+		self.ent_delay_max = ctk.CTkEntry(delay_body, width=70, justify="center")
 		self.ent_delay_max.insert(0, "60")
 		self.ent_delay_max.grid(row=0, column=3, padx=4, pady=2)
 
-		ttk.Label(delay_frame, text="giây").grid(
+		ctk.CTkLabel(delay_body, text="giây").grid(
 			row=0, column=4, sticky="w", pady=2
 		)
 
 		# Giả lập gõ phím
-		ttk.Label(delay_frame, text="Giả lập gõ phím:").grid(
+		ctk.CTkLabel(delay_body, text="Giả lập gõ phím:").grid(
 			row=1, column=0, sticky="w", pady=2
 		)
-		self.ent_typing_min = ttk.Entry(delay_frame, width=6, justify="center")
+		self.ent_typing_min = ctk.CTkEntry(delay_body, width=70, justify="center")
 		self.ent_typing_min.insert(0, "3")
 		self.ent_typing_min.grid(row=1, column=1, padx=4, pady=2)
 
-		ttk.Label(delay_frame, text="đến").grid(row=1, column=2, pady=2)
-		self.ent_typing_max = ttk.Entry(delay_frame, width=6, justify="center")
+		ctk.CTkLabel(delay_body, text="đến").grid(row=1, column=2, pady=2)
+		self.ent_typing_max = ctk.CTkEntry(delay_body, width=70, justify="center")
 		self.ent_typing_max.insert(0, "5")
 		self.ent_typing_max.grid(row=1, column=3, padx=4, pady=2)
 
-		ttk.Label(delay_frame, text="giây").grid(
+		ctk.CTkLabel(delay_body, text="giây").grid(
 			row=1, column=4, sticky="w", pady=2
 		)
 
 		# --- 5. TIẾN TRÌNH & NÚT CHẠY (cố định ở đáy cột) ---
-		footer_frame = ttk.Frame(left_container, padding=(12, 8, 12, 0))
-		footer_frame.grid(row=1, column=0, columnspan=2, sticky="ew")
+		footer_frame = ctk.CTkFrame(left_container, fg_color="transparent")
+		footer_frame.grid(row=1, column=0, sticky="ew", padx=12, pady=(8, 0))
 
-		self.progress = ttk.Progressbar(footer_frame, mode="determinate")
+		self.progress = ctk.CTkProgressBar(footer_frame, mode="determinate")
+		self.progress.set(0)
 		self.progress.pack(fill="x", pady=(0, 8))
 
-		self.btn_start = ttk.Button(
+		self.btn_start = ctk.CTkButton(
 			footer_frame, text="Chạy tiến trình", command=self.start_screen_2
 		)
 		self.btn_start.pack(fill="x", ipady=4)
 
 		# ================= CỘT BÊN PHẢI: DANH SÁCH UIDS =================
-		right_frame = ttk.LabelFrame(
-			self.parent, text=" Danh sách UIDs ", padding=12
+		right_frame = TitledFrame(
+			self.parent, title=" Danh sách UIDs "
 		)
 		right_frame.grid(row=0, column=1, sticky="nsew", padx=(5, 10), pady=10)
 
-		ttk.Label(
-			right_frame,
+		ctk.CTkLabel(
+			right_frame.body,
 			text="(Phím Delete hoặc Double Click để xóa dòng)",
-			font=("Segoe UI", 8, "italic"),
-			foreground="gray",
+			font=ctk.CTkFont(size=11, slant="italic"),
+			text_color=TEXT_MUTED,
+			anchor="w",
 		).pack(anchor="w", pady=(0, 4))
 
 		# Bọc Listbox + Scrollbar vào Frame để cuộn mượt mà
-		list_container = ttk.Frame(right_frame)
+		list_container = ctk.CTkFrame(right_frame.body, fg_color="transparent")
 		list_container.pack(fill="both", expand=True, pady=(0, 8))
 
-		scrollbar = ttk.Scrollbar(list_container, orient="vertical")
-		scrollbar.pack(side="right", fill="y")
-
+		# Giữ tk.Listbox (CustomTkinter không có widget tương đương), style theo theme
 		self.listbox_uids = tk.Listbox(
 			list_container,
-			yscrollcommand=scrollbar.set,
 			selectmode="extended",
-			font=("Consolas", 9),
-			bd=1,
-			relief="solid",
+			font=("Consolas", 10),
+			bg=BG_PANEL,
+			fg=TEXT,
+			selectbackground=SELECT_COLOR,
+			selectforeground="#ffffff",
+			highlightthickness=0,
+			borderwidth=0,
+			relief="flat",
 		)
+		scrollbar = ctk.CTkScrollbar(
+			list_container, orientation="vertical", command=self.listbox_uids.yview
+		)
+		self.listbox_uids.configure(yscrollcommand=scrollbar.set)
+
 		self.listbox_uids.pack(side="left", fill="both", expand=True)
-		scrollbar.config(command=self.listbox_uids.yview)
+		scrollbar.pack(side="right", fill="y")
 
 		self.listbox_uids.bind("<Delete>", self.delete_selected_uid)
 		self.listbox_uids.bind("<Double-1>", self.delete_selected_uid)
 
 		# ---- NÚT ĐIỀU KHIỂN DANH SÁCH ----
-		btn_frame = ttk.Frame(right_frame)
+		btn_frame = ctk.CTkFrame(right_frame.body, fg_color="transparent")
 		btn_frame.pack(fill="x")
 
-		btn_import_txt = ttk.Button(
+		btn_import_txt = ctk.CTkButton(
 			btn_frame,
 			text="Thêm vào list (.csv/.txt)",
 			command=self.import_uids,
 		)
 		btn_import_txt.pack(side="left", fill="x", expand=True, padx=(0, 3))
 
-		btn_clear_all = ttk.Button(
+		btn_clear_all = ctk.CTkButton(
 			btn_frame, text="Clear All", command=self.clear_all_uids
 		)
 		btn_clear_all.pack(side="right", fill="x", expand=True, padx=(3, 0))
@@ -417,8 +426,8 @@ class SmsScreen(tk.Frame):
 			"user_agent": self.controller.get_user_agent(),
 		}
 		users = list(self.user_list)
-		self.btn_start.config(state=tk.DISABLED, text="Đang chạy...")
-		self.progress.config(value=0)
+		self.btn_start.configure(state="disabled", text="Đang chạy...")
+		self.progress.set(0)
 
 		selenium_thread = threading.Thread(
 			target=self.run_selenium_process_s2,
@@ -504,9 +513,9 @@ class SmsScreen(tk.Frame):
 				if success:
 					success_count += 1
 
-				# Cập nhật thanh Progressbar trên giao diện
+				# Cập nhật thanh Progressbar trên giao diện (CTkProgressBar dùng thang 0..1)
 				progress_val = int(((idx + 1) / total_users) * 100)
-				self.after(0, lambda v=progress_val: self.progress.config(value=v))
+				self.after(0, lambda v=progress_val: self.progress.set(v / 100))
 
 				if idx < total_users - 1:
 					time.sleep(random.uniform(settings["delay_min"], settings["delay_max"]))
@@ -532,7 +541,7 @@ class SmsScreen(tk.Frame):
 				obj.close()
 			self.after(
 				0,
-				lambda: self.btn_start.config(
-					state=tk.NORMAL, text="Chạy Tiến Trình"
+				lambda: self.btn_start.configure(
+					state="normal", text="Chạy Tiến Trình"
 				),
 			)

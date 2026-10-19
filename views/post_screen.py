@@ -1,13 +1,24 @@
 import os
 import shutil
 import threading
+
+import customtkinter as ctk
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox
 
 import bot
+from services.ui_theme import (
+    BG_PANEL,
+    SELECT_COLOR,
+    TEXT,
+    TEXT_MUTED,
+    TitledFrame,
+    apply_theme,
+    status_color,
+)
 
 
-class PostScreen(tk.Frame):
+class PostScreen(ctk.CTkFrame):
     def __init__(self, parent, controller):
         super().__init__(parent)
         self.parent = parent
@@ -15,72 +26,88 @@ class PostScreen(tk.Frame):
         self.image_paths = []
         self.worker = None
 
+        apply_theme()
         self._build_ui()
 
     def _build_ui(self):
-        left_frame = ttk.LabelFrame(self.parent, text=" Nội dung bài đăng ", padding=10)
+        left_frame = TitledFrame(self.parent, title=" Nội dung bài đăng ")
         left_frame.pack(side="left", fill="both", expand=True, padx=10, pady=10)
 
-        ttk.Label(left_frame, text="Nội dung bài viết:").pack(anchor="w", pady=(0, 4))
-        self.txt_content = tk.Text(left_frame, height=12, wrap="word")
+        ctk.CTkLabel(left_frame.body, text="Nội dung bài viết:").pack(
+            anchor="w", pady=(0, 4)
+        )
+        self.txt_content = ctk.CTkTextbox(left_frame.body, height=220, wrap="word")
         self.txt_content.pack(fill="both", expand=True, pady=(0, 10))
         self.txt_content.insert(
             "1.0",
             "Nhập nội dung bài viết tại đây..."
         )
 
-        control_frame = ttk.LabelFrame(left_frame, text=" Điều khiển ", padding=10)
+        control_frame = TitledFrame(left_frame.body, title=" Điều khiển ")
         control_frame.pack(fill="x", pady=(0, 10))
 
-        btn_row = ttk.Frame(control_frame)
+        btn_row = ctk.CTkFrame(control_frame.body, fg_color="transparent")
         btn_row.grid(row=0, column=0, sticky="ew")
         btn_row.columnconfigure(0, weight=1)
         btn_row.columnconfigure(1, weight=1)
 
-        self.btn_select_images = ttk.Button(
+        self.btn_select_images = ctk.CTkButton(
             btn_row,
             text="Chọn ảnh/video",
             command=self.select_images
         )
         self.btn_select_images.grid(row=0, column=0, sticky="ew", padx=(0, 6))
 
-        self.btn_start = ttk.Button(
+        self.btn_start = ctk.CTkButton(
             btn_row,
             text="Đăng bài",
             command=self.start_posting
         )
         self.btn_start.grid(row=0, column=1, sticky="ew", padx=(6, 0))
 
-        self.lbl_status = ttk.Label(
-            left_frame,
+        self.lbl_status = ctk.CTkLabel(
+            left_frame.body,
             text="Trạng thái: Sẵn sàng",
-            foreground="blue"
+            text_color=status_color("blue"),
+            anchor="w"
         )
         self.lbl_status.pack(anchor="w")
 
-        right_frame = ttk.LabelFrame(self.parent, text=" Tệp đính kèm ", padding=10)
+        right_frame = TitledFrame(self.parent, title=" Tệp đính kèm ")
         right_frame.pack(side="right", fill="both", padx=10, pady=10)
 
-        ttk.Label(
-            right_frame,
+        ctk.CTkLabel(
+            right_frame.body,
             text="Danh sách file sẽ được gửi lên bài viết:",
-            font=("Arial", 9, "italic"),
-            foreground="gray"
+            font=ctk.CTkFont(size=11, slant="italic"),
+            text_color=TEXT_MUTED,
+            anchor="w"
         ).pack(anchor="w", pady=(0, 6))
 
-        self.listbox_files = tk.Listbox(right_frame, width=42, height=18)
+        self.listbox_files = tk.Listbox(
+            right_frame.body,
+            width=42,
+            height=18,
+            bg=BG_PANEL,
+            fg=TEXT,
+            selectbackground=SELECT_COLOR,
+            selectforeground="#ffffff",
+            highlightthickness=0,
+            borderwidth=0,
+            relief="flat",
+        )
         self.listbox_files.pack(fill="both", expand=True, pady=(0, 8))
 
-        file_btn_row = ttk.Frame(right_frame)
+        file_btn_row = ctk.CTkFrame(right_frame.body, fg_color="transparent")
         file_btn_row.pack(fill="x")
 
-        ttk.Button(
+        ctk.CTkButton(
             file_btn_row,
             text="Xóa file chọn",
             command=self.remove_selected_file
         ).pack(side="left", fill="x", expand=True, padx=(0, 4))
 
-        ttk.Button(
+        ctk.CTkButton(
             file_btn_row,
             text="Xóa tất cả",
             command=self.clear_files
@@ -144,9 +171,9 @@ class PostScreen(tk.Frame):
             messagebox.showerror("Lỗi", "Vui lòng chọn ít nhất 1 group trong danh sách Groups trước khi đăng bài.")
             return
 
-        self.btn_start.config(state=tk.DISABLED, text="Đang đăng...")
-        self.btn_select_images.config(state=tk.DISABLED)
-        self.lbl_status.config(text="Trạng thái: Đang khởi chạy...", foreground="orange")
+        self.btn_start.configure(state="disabled", text="Đang đăng...")
+        self.btn_select_images.configure(state="disabled")
+        self.lbl_status.configure(text="Trạng thái: Đang khởi chạy...", text_color=status_color("orange"))
 
         thread = threading.Thread(
             target=self.run_posting,
@@ -158,9 +185,9 @@ class PostScreen(tk.Frame):
     def run_posting(self, uid, content, image_paths, selected_groups):
         driver = None
         try:
-            self.after(0, lambda: self.lbl_status.config(
+            self.after(0, lambda: self.lbl_status.configure(
                 text="Trạng thái: Đang đăng nhập...",
-                foreground="orange"
+                text_color=status_color("orange")
             ))
 
             driver = bot.FacebookBot(self.controller.is_demo_mode)
@@ -194,9 +221,9 @@ class PostScreen(tk.Frame):
                     continue
                 group_name = group.get("name", "").strip() or group_id or f"Group {index}"
 
-                self.after(0, lambda i=index, t=total_groups, name=group_name: self.lbl_status.config(
+                self.after(0, lambda i=index, t=total_groups, name=group_name: self.lbl_status.configure(
                     text=f"Trạng thái: Đang đăng {i}/{t} - {name}",
-                    foreground="green"
+                    text_color=status_color("green")
                 ))
 
                 try:
@@ -208,15 +235,15 @@ class PostScreen(tk.Frame):
 
             summary = f"Hoàn thành. Thành công: {success_count}, Thất bại: {fail_count}"
             self.after(0, lambda: messagebox.showinfo("Kết quả", summary))
-            self.after(0, lambda: self.lbl_status.config(
+            self.after(0, lambda: self.lbl_status.configure(
                 text="Trạng thái: Hoàn thành",
-                foreground="navy"
+                text_color=status_color("navy")
             ))
         except Exception as e:
             self.after(0, lambda: messagebox.showerror("Lỗi", f"Không thể đăng bài: {e}"))
-            self.after(0, lambda: self.lbl_status.config(
+            self.after(0, lambda: self.lbl_status.configure(
                 text="Trạng thái: Có lỗi xảy ra",
-                foreground="red"
+                text_color=status_color("red")
             ))
         finally:
             if driver:
@@ -224,5 +251,5 @@ class PostScreen(tk.Frame):
                     driver.close()
                 except Exception:
                     pass
-            self.after(0, lambda: self.btn_start.config(state=tk.NORMAL, text="Đăng bài"))
-            self.after(0, lambda: self.btn_select_images.config(state=tk.NORMAL))
+            self.after(0, lambda: self.btn_start.configure(state="normal", text="Đăng bài"))
+            self.after(0, lambda: self.btn_select_images.configure(state="normal"))

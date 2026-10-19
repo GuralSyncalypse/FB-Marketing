@@ -11,3 +11,5 @@ requests
 google-genai
 python-dotenv
 playwright
+customtkinter
+setuptools

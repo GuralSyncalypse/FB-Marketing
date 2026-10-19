@@ -6,8 +6,11 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 import urllib.parse
 
+import customtkinter as ctk
+
 import bot
 from services.local_server import start_local_server
+from services.ui_theme import TitledFrame, apply_theme
 from views.dev_screen import DevelopScreen
 from views.post_screen import PostScreen
 from views.post_scan_screen import PostScanScreen
@@ -16,12 +19,19 @@ from views.uid_scan_screen import UidScanScreen
 
 
 # ================= CLASS GIAO DIỆN CHÍNH (APP) =================
-class App(tk.Tk):
+class App(ctk.CTk):
 
   def __init__(self):
     super().__init__()
+    apply_theme()  # Cấu hình CustomTkinter + style các widget ttk giữ lại
     self.title("H2 Tool - Công cụ Marketing Facebook")
-    self.geometry("950x700")
+
+    # Cửa sổ vừa với màn hình (kể cả màn hình 768px) và căn giữa
+    win_w = 950
+    win_h = min(700, self.winfo_screenheight() - 90)
+    win_x = max(0, (self.winfo_screenwidth() - win_w) // 2)
+    win_y = max(0, (self.winfo_screenheight() - win_h) // 2 - 20)
+    self.geometry(f"{win_w}x{win_h}+{win_x}+{win_y}")
 
     self.protocol("WM_DELETE_WINDOW", self.__on_close)
 
@@ -115,22 +125,22 @@ class App(tk.Tk):
 
       # 1. Đọc file cũ
       if os.path.exists(file_path):
-           try:
-               with open(file_path, "r", encoding="utf-8") as f:
-                   data = self._normalize_saved_groups_data(json.load(f))
-           except Exception:
-               data = {}
+          try:
+              with open(file_path, "r", encoding="utf-8") as f:
+                  data = self._normalize_saved_groups_data(json.load(f))
+          except Exception:
+              data = {}
 
       data = self._normalize_saved_groups_data(data)
 
-       # 2. Cập nhật hoặc thêm mới User trực tiếp
+      # 2. Cập nhật hoặc thêm mới User trực tiếp
       data[str(self.uid)] = {"groups": self.groups_data}
 
       # 3. Ghi lại file
       with open(file_path, "w", encoding="utf-8") as f:
           json.dump(data, f, ensure_ascii=False, indent=4)
       return True
-  
+
   def __on_close(self):
     print("Đang lưu trạng thái ứng dụng...")
 
@@ -142,121 +152,129 @@ class App(tk.Tk):
     finally:
       self.destroy()  # Giải phóng giao diện và thoát hẳn
 
-  # ================= THÊM THANH MENU BAR (TASKBAR) =================
+  # ================= THANH MENU BAR (TASKBAR) =================
   def __build_menu(self):
-    """Xây dựng thanh Menu Bar trên cùng của ứng dụng"""
-    menubar = tk.Menu(self)
+    """Thanh menu trên cùng, dùng widget CustomTkinter để đồng bộ dark theme."""
+    topbar = ctk.CTkFrame(self, corner_radius=0)
+    topbar.pack(side="top", fill="x")
 
-    # Tạo Menu thả xuống cho "Cài đặt"
-    settings_menu = tk.Menu(menubar, tearoff=0)
-    settings_menu.add_command(
-        label="Cấu hình hệ thống", command=self.open_settings_window
+    self.menu_settings = ctk.CTkOptionMenu(
+        topbar,
+        values=["Cấu hình hệ thống", "Thoát"],
+        command=self._on_settings_menu,
+        width=140,
     )
-    settings_menu.add_separator()
-    settings_menu.add_command(label="Thoát", command=self.quit)
+    self.menu_settings.set("Cài đặt")
+    self.menu_settings.pack(side="left", padx=8, pady=5)
 
-    # Đưa "Cài đặt" lên thanh Menu chính
-    menubar.add_cascade(label="Cài đặt", menu=settings_menu)
-
-    # Gán menubar cho cửa sổ chính
-    self.config(menu=menubar)
+  def _on_settings_menu(self, choice):
+    # Trả nhãn về "Cài đặt" sau mỗi lần chọn
+    self.menu_settings.set("Cài đặt")
+    if choice == "Cấu hình hệ thống":
+      self.open_settings_window()
+    elif choice == "Thoát":
+      self.quit()
 
   def open_settings_window(self):
-        """Mở cửa sổ Popup Cài đặt hệ thống"""
-        settings_win = tk.Toplevel(self)
-        settings_win.title("Cài đặt hệ thống")
-        settings_win.geometry("380x200")
-        settings_win.resizable(False, False)
-        settings_win.grab_set()  # Khóa tương tác với màn hình chính khi popup đang mở
+    """Mở cửa sổ Popup Cài đặt hệ thống"""
+    settings_win = ctk.CTkToplevel(self)
+    settings_win.title("Cài đặt hệ thống")
+    settings_win.geometry("380x200")
+    settings_win.resizable(False, False)
+    settings_win.grab_set()  # Khóa tương tác với màn hình chính khi popup đang mở
 
-        # Tiêu đề Popup
-        ttk.Label(
-            settings_win, text="CẤU HÌNH CÀI ĐẶT", font=("Arial", 11, "bold")
-        ).pack(pady=(20, 10))
+    # Tiêu đề Popup
+    ctk.CTkLabel(
+        settings_win, text="CẤU HÌNH CÀI ĐẶT", font=ctk.CTkFont(size=14, weight="bold")
+    ).pack(pady=(20, 10))
 
-        # Khung chứa nội dung cài đặt
-        form_frame = ttk.Frame(settings_win, padding=10)
-        form_frame.pack(fill="both", expand=True)
+    # Khung chứa nội dung cài đặt
+    form_frame = ctk.CTkFrame(settings_win, fg_color="transparent")
+    form_frame.pack(fill="both", expand=True, padx=10, pady=10)
 
-        # Biến quản lý trạng thái Checkbox
-        chk_demo_var = tk.BooleanVar(value=getattr(self, "is_demo_mode", False))
+    # Biến quản lý trạng thái Checkbox
+    chk_demo_var = tk.BooleanVar(value=getattr(self, "is_demo_mode", False))
 
-        # --- TÙY CHỌN DEMO MODE (CHECKBOX) ---
-        chk_demo = ttk.Checkbutton(
-            form_frame,
-            text=" Demo Mode",
-            variable=chk_demo_var,
-        )
-        chk_demo.pack(anchor="center", pady=15)
+    # --- TÙY CHỌN DEMO MODE (CHECKBOX) ---
+    chk_demo = ctk.CTkCheckBox(
+        form_frame,
+        text=" Demo Mode",
+        variable=chk_demo_var,
+    )
+    chk_demo.pack(anchor="center", pady=15)
 
-        # Hàm xử lý khi bấm nút Lưu
-        def save_settings():
-            self.is_demo_mode = chk_demo_var.get()
-            
-            # Lưu trạng thái vào file config.json (nếu có)
-            if hasattr(self, "save_config_to_file"):
-                self.save_config_to_file()
-                
-            status_text = "BẬT" if self.is_demo_mode else "TẮT"
-            messagebox.showinfo("Thông báo", f"Đã lưu cài đặt thành công!\nTrạng thái Demo Mode: {status_text}")
-            settings_win.destroy()
+    # Hàm xử lý khi bấm nút Lưu
+    def save_settings():
+        self.is_demo_mode = chk_demo_var.get()
 
-        # Nút Lưu cấu hình
-        btn_save = ttk.Button(settings_win, text="Lưu cấu hình", command=save_settings)
-        btn_save.pack(pady=(0, 20))
+        # Lưu trạng thái vào file config.json (nếu có)
+        if hasattr(self, "save_config_to_file"):
+            self.save_config_to_file()
+
+        status_text = "BẬT" if self.is_demo_mode else "TẮT"
+        messagebox.showinfo("Thông báo", f"Đã lưu cài đặt thành công!\nTrạng thái Demo Mode: {status_text}")
+        settings_win.destroy()
+
+    # Nút Lưu cấu hình
+    btn_save = ctk.CTkButton(settings_win, text="Lưu cấu hình", command=save_settings)
+    btn_save.pack(pady=(0, 20))
 
   # =========================================================================
 
   def __build_shared_panel(self):
     """Xây dựng khu vực cấu hình thông tin tài khoản dùng chung phía trên (Đã thu gọn)"""
-    top_shared_frame = ttk.LabelFrame(
-        self, text=" Thông tin tài khoản hiện tại ", padding=10
+    top_shared_frame = TitledFrame(
+        self, title=" Thông tin tài khoản hiện tại "
     )
     top_shared_frame.pack(side="top", fill="x", padx=10, pady=5)
+    body = top_shared_frame.body
 
     # Định hình layout sử dụng grid để kiểm soát khoảng cách tốt hơn thay vì pack hỗn hợp
-    top_shared_frame.columnconfigure(1, weight=1)
-    top_shared_frame.columnconfigure(
+    body.columnconfigure(1, weight=1)
+    body.columnconfigure(
         3, weight=2
     )  # Cho ô User Agent rộng hơn vì UA thường rất dài
 
     # HÀNG 1: UID & USER AGENT
     # --- Cụm UID ---
-    ttk.Label(top_shared_frame, text="UID:", width=8).grid(
+    ctk.CTkLabel(body, text="UID:", width=40, anchor="w").grid(
         row=0, column=0, sticky="w", pady=5
     )
-    self.ent_uid_shared = ttk.Entry(
-        top_shared_frame, font=("Arial", 10, "bold"), width=25
+    self.ent_uid_shared = ctk.CTkEntry(
+        body,
+        font=ctk.CTkFont(family="Arial", size=13, weight="bold"),
+        width=200,
     )
     self.ent_uid_shared.grid(row=0, column=1, sticky="w", pady=5, padx=(0, 20))
     self.ent_uid_shared.insert(0, self.empty_uid)
-    self.ent_uid_shared.config(state="readonly")
+    self.ent_uid_shared.configure(state="disabled")
 
     # --- Cụm User Agent ---
-    ttk.Label(top_shared_frame, text="User Agent:").grid(
-        row=0, column=2, sticky="w", pady=5
+    ctk.CTkLabel(body, text="User Agent:").grid(
+        row=0, column=2, sticky="w", padx=(10, 6), pady=5
     )
-    self.ent_ua = ttk.Entry(top_shared_frame)
+    self.ent_ua = ctk.CTkEntry(body)
     self.ent_ua.grid(row=0, column=3, sticky="ew", pady=5)
 
     # HÀNG 2: QUẢN LÝ GROUPS (Rút gọn thành hiển thị số lượng)
-    group_status_frame = ttk.Frame(top_shared_frame)
+    group_status_frame = ctk.CTkFrame(body, fg_color="transparent")
     group_status_frame.grid(
         row=1, column=0, columnspan=4, sticky="ew", pady=(8, 0)
     )
 
     # Biến lưu trữ số lượng group để cập nhật động lên giao diện
     self.lbl_group_count_var = tk.StringVar(value="Đã quét: 0 groups")
-    lbl_count = ttk.Label(
+    lbl_count = ctk.CTkLabel(
         group_status_frame,
         textvariable=self.lbl_group_count_var,
-        font=("Arial", 10, "italic"),
+        font=ctk.CTkFont(size=12, slant="italic"),
     )
     lbl_count.pack(side="left", padx=(0, 15))
 
-    btn_show_groups = ttk.Button(
+    btn_show_groups = ctk.CTkButton(
         group_status_frame,
         text="Danh sách nhóm",
+        width=130,
         command=self.open_groups_window,
     )
     btn_show_groups.pack(side="left")
@@ -272,38 +290,38 @@ class App(tk.Tk):
     groups = getattr(self, "groups_data", []) or []
     selected_count = len(self.get_selected_groups())  # Tái sử dụng hàm trên
     total_count = len(groups)
-    
+
     self.lbl_group_count_var.set(f"Đã chọn: {selected_count}/{total_count} nhóm")
 
   def open_groups_window(self):
     """Mở cửa sổ Popup quản lý và tích chọn danh sách nhóm"""
     # ================= KHỞI TẠO CỬA SỔ POPUP =================
-    groups_win = tk.Toplevel(self)
+    groups_win = ctk.CTkToplevel(self)
     groups_win.title("Danh sách nhóm")
     groups_win.geometry("580x520")
     groups_win.grab_set()
     groups_win.resizable(False, False)
 
     # 1. TOOLBAR TẠO THAO TÁC CHÍNH (Top Bar)
-    toolbar = ttk.Frame(groups_win, padding=(10, 10, 10, 5))
-    toolbar.pack(fill="x")
+    toolbar = ctk.CTkFrame(groups_win, fg_color="transparent")
+    toolbar.pack(fill="x", padx=10, pady=(10, 5))
 
     # 2. THANH TÌM KIẾM (Search Bar)
-    search_frame = ttk.Frame(groups_win, padding=(10, 5, 10, 5))
-    search_frame.pack(fill="x")
+    search_frame = ctk.CTkFrame(groups_win, fg_color="transparent")
+    search_frame.pack(fill="x", padx=10, pady=5)
 
     # 3. NỘI DUNG BẢNG (Treeview Main)
-    main_content = ttk.Frame(groups_win, padding=(10, 5, 10, 10))
-    main_content.pack(fill="both", expand=True)
+    main_content = ctk.CTkFrame(groups_win, fg_color="transparent")
+    main_content.pack(fill="both", expand=True, padx=10, pady=(5, 10))
 
     # ================= XÂY DỰNG CONTROL =================
     # --- Toolbar controls ---
-    btn_scan = ttk.Button(toolbar, text="Quét", command=lambda: handle_scan())
+    btn_scan = ctk.CTkButton(toolbar, text="Quét", width=80, command=lambda: handle_scan())
     btn_scan.pack(side="left", padx=(0, 10))
 
     rad_var = tk.IntVar(value=-1)
 
-    rad_all = ttk.Radiobutton(
+    rad_all = ctk.CTkRadioButton(
         toolbar,
         text="Chọn tất cả",
         variable=rad_var,
@@ -312,7 +330,7 @@ class App(tk.Tk):
     )
     rad_all.pack(side="left", padx=5)
 
-    rad_none = ttk.Radiobutton(
+    rad_none = ctk.CTkRadioButton(
         toolbar,
         text="Bỏ chọn tất cả",
         variable=rad_var,
@@ -321,23 +339,23 @@ class App(tk.Tk):
     )
     rad_none.pack(side="left", padx=5)
 
-    btn_save = ttk.Button(
-        toolbar, text="Xác nhận", command=lambda: save_and_close()
+    btn_save = ctk.CTkButton(
+        toolbar, text="Xác nhận", width=90, command=lambda: save_and_close()
     )
     btn_save.pack(side="right")
 
     # --- Search Bar controls ---
-    ttk.Label(search_frame, text="🔍 Tìm kiếm:").pack(
+    ctk.CTkLabel(search_frame, text="🔍 Tìm kiếm:").pack(
         side="left", padx=(0, 5)
     )
     search_var = tk.StringVar()
-    ent_search = ttk.Entry(search_frame, textvariable=search_var)
+    ent_search = ctk.CTkEntry(search_frame, textvariable=search_var)
     ent_search.pack(side="left", fill="x", expand=True, padx=(0, 5))
 
-    btn_clear_search = ttk.Button(
+    btn_clear_search = ctk.CTkButton(
         search_frame,
         text="✕",
-        width=3,
+        width=40,
         command=lambda: search_var.set(""),
     )
     btn_clear_search.pack(side="right")
@@ -350,8 +368,8 @@ class App(tk.Tk):
       selectmode="browse",  # Chuyển thành "browse" để bật Highlight dòng khi click
     )
 
-    scrollbar = ttk.Scrollbar(
-        main_content, orient="vertical", command=tree_groups.yview
+    scrollbar = ctk.CTkScrollbar(
+        main_content, orientation="vertical", command=tree_groups.yview
     )
     tree_groups.configure(yscrollcommand=scrollbar.set)
 
@@ -452,7 +470,7 @@ class App(tk.Tk):
             )
             return
 
-        btn_scan.config(state="disabled", text="Đang quét...")
+        btn_scan.configure(state="disabled", text="Đang quét...")
 
         def local_refresh():
             if not groups_win.winfo_exists():
@@ -461,7 +479,7 @@ class App(tk.Tk):
             self.lbl_group_count_var.set(
                 f"Đã quét: {len(self.groups_data)} groups"
             )
-            btn_scan.config(state="normal", text="Quét")
+            btn_scan.configure(state="normal", text="Quét")
             messagebox.showinfo(
                 "Thành công",
                 f"Đã cập nhật {len(self.groups_data)} nhóm thành công!",
@@ -469,7 +487,7 @@ class App(tk.Tk):
 
         def reset_scan_button():
             if groups_win.winfo_exists():
-                btn_scan.config(state="normal", text="Quét")
+                btn_scan.configure(state="normal", text="Quét")
 
         self._trigger_ui_refresh = local_refresh
         self._reset_group_scan_button = reset_scan_button
@@ -492,27 +510,7 @@ class App(tk.Tk):
 
   def __build_navigation_tabs(self):
     """Xây dựng khu vực Notebook và nhúng các màn hình tính năng vào"""
-    def on_tab_changed(event):
-      # Lấy Notebook phát ra sự kiện
-      notebook = event.widget
-
-      # Lấy ID/Widget của tab đang được chọn
-      selected_tab = notebook.select()
-
-      # Lấy index của tab (0, 1, 2,...)
-      current_index = notebook.index(selected_tab)
-
-      # Lấy tiêu đề (text) của tab
-      tab_title = notebook.tab(selected_tab, "text")
-      # Xử lý logic tương ứng từng tab
-      if current_index == 0:
-          # Code khi ở Tab 1
-          pass
-      elif tab_title in ("Quét UID", "Quét bài"):
-          self.screens[tab_title].refresh_groups_preview()
-
-
-    self.notebook = ttk.Notebook(self)
+    self.notebook = ctk.CTkTabview(self, command=self.on_tab_changed)
     self.notebook.pack(fill="both", expand=True, padx=5, pady=5)
 
     tab_configs = [
@@ -527,15 +525,24 @@ class App(tk.Tk):
     self.screens = {}
 
     for label, screen_cls in tab_configs:
-      tab = ttk.Frame(self.notebook)
-      self.notebook.add(tab, text=label)
-
+      tab = self.notebook.add(label)
       screen = screen_cls(tab, self)
 
       self.tabs.append(tab)
       self.screens[label] = screen
 
-    self.notebook.bind("<<NotebookTabChanged>>", on_tab_changed)
+  def on_tab_changed(self):
+    """Làm mới preview khi chuyển sang tab Quét UID / Quét bài."""
+    # CTkTabview có thể gọi command ngay trong lúc khởi tạo, khi các thuộc tính
+    # này chưa sẵn sàng -> bỏ qua an toàn.
+    if not hasattr(self, "notebook") or not hasattr(self, "screens"):
+      return
+
+    tab_title = self.notebook.get()
+    if tab_title in ("Quét UID", "Quét bài"):
+      screen = self.screens.get(tab_title)
+      if screen is not None:
+        screen.refresh_groups_preview()
 
   # ================= CÁC HÀM XỬ LÝ LOGIC =================
   def save_to_profile_folder(self, uid: str, cookies: list):
@@ -572,10 +579,10 @@ class App(tk.Tk):
     self.cookies = data.get("cookies", [])
     self.user_agent = data.get("user_agent", "")
 
-    self.ent_uid_shared.config(state="normal")
+    self.ent_uid_shared.configure(state="normal")
     self.ent_uid_shared.delete(0, tk.END)
     self.ent_uid_shared.insert(0, self.uid)
-    self.ent_uid_shared.config(state="readonly")
+    self.ent_uid_shared.configure(state="disabled")
 
     self.ent_ua.delete(0, tk.END)
     self.ent_ua.insert(0, self.user_agent)
@@ -610,7 +617,7 @@ class App(tk.Tk):
           error_message = worker.get_start_error_message()
           self.after(0, lambda msg=error_message: messagebox.showerror("Lỗi", msg))
           return
-        
+
         results = worker.scrape_joined_groups()
 
         # 1. Chuyển đổi dữ liệu bằng List Comprehension
