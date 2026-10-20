@@ -19,16 +19,50 @@ import re
 import json
 import urllib.parse
 import pandas as pd
+import sys
+
+# Console Windows có thể dùng cp1252 khi stdout bị redirect; log tiếng Việt
+# không được phép làm sập tiến trình.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__)) # Thư mục /app
 
-import json
-import os
-import re
-import pandas as pd
+# PyInstaller --onefile giải nén code vào thư mục tạm. Dữ liệu chạy (profile,
+# cookie, export, log) phải nằm cạnh file exe thì mới còn sau khi thoát.
+if getattr(sys, "frozen", False):
+    APP_DIR = os.path.dirname(os.path.abspath(sys.executable))
+else:
+    APP_DIR = BASE_DIR
+
+from services.cookie_store import normalize_uid
+from services.profile_manager import (
+    ProfileManager,
+    ProfileMode,
+    SessionProfile,
+    UidMutex,
+    dispose_session,
+    kill_profile_processes,
+    wait_for_profile_release,
+)
+
+_DEFAULT_PROFILE_MANAGER = None
+_DEFAULT_PROFILE_MANAGER_LOCK = threading.Lock()
 
 
-def convert_to_spreadsheet(json_filepath, output_filename=None):
+def get_profile_manager() -> ProfileManager:
+    """Singleton quản lý profile/cookie trong phạm vi một process."""
+    global _DEFAULT_PROFILE_MANAGER
+    with _DEFAULT_PROFILE_MANAGER_LOCK:
+        if _DEFAULT_PROFILE_MANAGER is None:
+            _DEFAULT_PROFILE_MANAGER = ProfileManager(APP_DIR)
+        return _DEFAULT_PROFILE_MANAGER
+
+
+def convert_to_spreadsheet(json_filepath, output_filename=None, output_dir=None):
     """Đọc file .json hoặc .jsonl, xử lý dữ liệu và tự động xuất ra đúng thư mục:
 
     - Nếu đầu ra là CSV  -> lưu vào './data/processed/csv/'
@@ -70,20 +104,22 @@ def convert_to_spreadsheet(json_filepath, output_filename=None):
     # ---------------------------------------------------------
     file_ext = os.path.splitext(output_filename)[1].lower()
 
-    if file_ext == ".csv":
-        output_dir = ".\\data\\processed\\csv"
+    if output_dir:
+        final_output_dir = output_dir
+    elif file_ext == ".csv":
+        final_output_dir = os.path.join(APP_DIR, "data", "processed", "csv")
     elif file_ext == ".xlsx":
-        output_dir = ".\\data\\processed\\excel"
+        final_output_dir = os.path.join(APP_DIR, "data", "processed", "excel")
     else:
         raise ValueError(
             "❌ Định dạng file không hỗ trợ. Vui lòng chọn file có đuôi .xlsx hoặc .csv"
         )
 
     # Tự động tạo folder nếu chưa tồn tại
-    os.makedirs(output_dir, exist_ok=True)
+    os.makedirs(final_output_dir, exist_ok=True)
 
     # Đường dẫn file hoàn chỉnh
-    final_output_path = os.path.join(output_dir, output_filename)
+    final_output_path = os.path.join(final_output_dir, output_filename)
 
     # ---------------------------------------------------------
     # 2. ĐỌC FILE .JSON / .JSONL
@@ -156,6 +192,7 @@ class FacebookBot:
         stop_event=None,
         on_save_batch=None,
         browser_mode="scan",
+        profile_mode=None,
     ):
         self.driver = None
         self.user_agent = None
@@ -171,6 +208,15 @@ class FacebookBot:
         self._profile_lock = None
         self._profile_uid = None
         self.last_start_error = None
+
+        # --- Vòng đời profile / session ---
+        self.profile_mode = profile_mode
+        self._session = None
+        self._uid_mutex = None
+        self._profile_path = None
+        self.data_dir = None
+        self.exports_dir = None
+        self.log_dir = None
 
     def _acquire_profile_lock(self, uid: str) -> bool:
         """Chỉ cho phép một browser session dùng cùng profile UID trong một app."""
@@ -205,11 +251,28 @@ class FacebookBot:
                 pass
 
     def get_start_error_message(self) -> str:
-        if self.last_start_error == "profile_in_use":
-            return "UID đang có tác vụ khác. Vui lòng chờ tác vụ hiện tại hoàn tất."
-        if self.last_start_error == "invalid_uid":
-            return "UID không hợp lệ."
-        return "Đăng nhập thất bại!"
+        messages = {
+            "profile_in_use": "UID đang có tác vụ khác. Vui lòng chờ tác vụ hiện tại hoàn tất.",
+            "invalid_uid": "UID không hợp lệ.",
+            "missing_cookies": "Chưa có cookie cho UID này. Hãy kết nối Extension để gửi lại.",
+            "account_mismatch": (
+                "Profile đang đăng nhập sai tài khoản so với UID nhận từ Extension. "
+                "Hãy reset profile hoặc đăng nhập lại."
+            ),
+            "profile_prepare_failed": "Không chuẩn bị được profile Chrome. Xem log để biết chi tiết.",
+            "browser_start_failed": "Không khởi động được Chrome (profile có thể đang bị giữ).",
+            "browser_navigation_failed": "Không truy cập được Facebook. Kiểm tra mạng/proxy.",
+            "login_failed": "Đăng nhập thất bại / Checkpoint!",
+        }
+        return messages.get(self.last_start_error, "Đăng nhập thất bại!")
+
+    def _init_data_dirs(self, uid: str):
+        """Mỗi tài khoản có vùng dữ liệu riêng: data/<uid>/..., logs/<uid>/..."""
+        self.data_dir = os.path.join(APP_DIR, "data", uid, "raw")
+        self.exports_dir = os.path.join(APP_DIR, "data", uid, "exports")
+        self.log_dir = os.path.join(APP_DIR, "logs", uid)
+        for path in (self.data_dir, self.exports_dir, self.log_dir):
+            os.makedirs(path, exist_ok=True)
 
     def _flush(self, file_name=None):
         """Gửi dữ liệu trong buffer đi lưu và xả rỗng buffer."""
@@ -252,78 +315,62 @@ class FacebookBot:
         user_agent: str = None,
         proxy: str = None,
         driver_type: str = "undetected",
+        session: SessionProfile = None,
     ) -> bool:
-        """Khởi tạo Driver (UC với Fallback về Standard) tích hợp tối ưu tốc độ, Profile cách ly và nạp Cookie chuẩn xác."""
+        """Khởi tạo Chrome trên profile của UID.
 
-        uid = str(uid).strip()
+        `session` do ProfileManager tạo (persistent/fresh/reset). Nếu bỏ trống,
+        bot tự lấy profile theo cấu hình `storage/config.json`.
+        """
         self.last_start_error = None
-        if not uid:
+
+        try:
+            uid = normalize_uid(uid)
+        except ValueError:
             self.last_start_error = "invalid_uid"
             return False
+
         if not self._acquire_profile_lock(uid):
             self.last_start_error = "profile_in_use"
             return False
 
-        # --- HÀM CON XỬ LÝ NẠP COOKIE ---
-        def _inject_cookies(driver_instance, file_path):
-            if not os.path.exists(file_path):
-                print(f"[{uid}] -> Không tìm thấy file cookie tại: {file_path}")
-                return False
+        # Khóa liên process: hai bản app trên cùng máy không mở trùng profile.
+        mutex = UidMutex(uid)
+        if not mutex.acquired:
+            self.last_start_error = "profile_in_use"
+            self._release_profile_lock()
+            return False
+        self._uid_mutex = mutex
 
-            try:
-                with open(file_path, "r", encoding="utf-8") as f:
-                    cookies = json.load(f)
+        # --- Chuẩn bị profile (dọn chrome mồ côi + seed cookie) ---
+        try:
+            profile = session or get_profile_manager().prepare(uid, self.profile_mode)
+        except Exception as error:
+            print(f"[{uid}] Không chuẩn bị được profile: {error}")
+            self._abort_start("profile_prepare_failed")
+            return False
 
-                driver_instance.get("https://www.facebook.com")
-                time.sleep(1)
-
-                success_count = 0
-                for cookie in cookies:
-                    cookie_dict = {
-                        "name": cookie.get("name"),
-                        "value": cookie.get("value"),
-                        "domain": cookie.get("domain", ".facebook.com"),
-                        "path": cookie.get("path", "/"),
-                        "secure": cookie.get("secure", True),
-                    }
-
-                    if (
-                        "expirationDate" in cookie
-                        and cookie["expirationDate"] is not None
-                    ):
-                        try:
-                            cookie_dict["expiry"] = int(
-                                float(cookie["expirationDate"])
-                            )
-                        except (ValueError, TypeError):
-                            pass
-
-                    try:
-                        driver_instance.add_cookie(cookie_dict)
-                        success_count += 1
-                    except Exception:
-                        pass
-
-                driver_instance.refresh()
-                time.sleep(2)
-                print(
-                    f"[{uid}] -> Đã nạp thành công {success_count}/{len(cookies)} Cookie."
-                )
-                return True
-            except Exception as e:
-                print(f"[{uid}] -> Lỗi khi đọc/nạp Cookie: {str(e)}")
-                return False
-
-        # 1. TÍNH TOÁN CÁC BIẾN CƠ BẢN
+        self._session = profile
+        self._profile_path = str(profile.path)
         self.user_agent = user_agent
-        profile_path = os.path.abspath(f"./profiles/{uid}")
+        self._init_data_dirs(uid)
+
+        profile_path = self._profile_path
         cookie_file_path = os.path.join(profile_path, "cookies.json")
 
-        mode = driver_type or getattr(self, "driver_type", "undetected")
+        if not os.path.exists(cookie_file_path) and not profile.is_persistent:
+            print(
+                f"[{uid}] Profile mới nhưng chưa có cookie tại "
+                f"storage/cookies/{uid}.json"
+            )
+            self._abort_start("missing_cookies")
+            return False
+
+        mode = driver_type or "undetected"
         ua = user_agent or getattr(self, "user_agent", None)
         visualize = getattr(self, "visualize", True)
 
-        # 2. HÀM TẠO OPTIONS (Tái sử dụng cho cả UC lẫn Standard)
+        # --- HÀM TẠO OPTIONS (dùng chung UC và Standard) ---
         def _build_options(is_standard=False):
             if is_standard:
                 options = StandardOptions()
@@ -350,6 +397,10 @@ class FacebookBot:
             options.add_argument("--disable-backgrounding-occluded-windows")
             options.add_argument("--disable-renderer-backgrounding")
 
+            # Profile mới không được mở trang welcome của Chrome.
+            options.add_argument("--no-first-run")
+            options.add_argument("--no-default-browser-check")
+
             # Tác vụ tự động không cần media để giảm băng thông/RAM. Giá trị
             # này được Chrome lưu vào profile, vì vậy analysis phải ghi đè rõ
             # về 1 thay vì chỉ bỏ qua preference.
@@ -367,35 +418,40 @@ class FacebookBot:
 
             return options
 
-        # 3. KHỞI TẠO DRIVER (CÓ THÊM LUỒNG FALLBACK)
+        # 3. KHỞI TẠO DRIVER (UC → fallback Standard)
         self.driver = None
 
         if mode == "undetected":
             try:
-                print(f"[{uid}] [uc.Selenium] Đang thử khởi tạo Undetected ChromeDriver...")
-                uc_options = _build_options(is_standard=False)
+                print(
+                    f"[{uid}] [uc.Selenium] Khởi tạo UC "
+                    f"(profile={profile.mode.value})..."
+                )
                 self.driver = uc.Chrome(
-                    options=uc_options,
+                    options=_build_options(is_standard=False),
                     user_data_dir=profile_path,
                     headless=not visualize,
                     use_subprocess=True,
-                    version_main=150
                 )
             except Exception as e:
                 print(f"[{uid}] ⚠️ [uc.Selenium] Khởi tạo thất bại ({e}).")
-                print(f"[{uid}] 🔄 Đang tự động chuyển sang (Fallback) Selenium Standard...")
-                mode = "standard"  # Chuyển mode về Standard để tiếp tục
+                print(
+                    f"[{uid}] 🔄 Dọn process còn sót rồi chuyển sang "
+                    "Selenium Standard..."
+                )
+                # UC có thể đã spawn chrome.exe trước khi lỗi. Không được mở
+                # Standard trên cùng profile khi process cũ còn giữ.
+                kill_profile_processes(profile_path, wait_seconds=6)
+                wait_for_profile_release(profile_path, timeout=4)
+                mode = "standard"
 
-        # Nếu chọn Standard từ đầu HOẶC do Undetected bị lỗi văng xuống đây
         if mode == "standard" and self.driver is None:
             try:
                 print(f"[{uid}] [Selenium Standard] Đang khởi tạo Chế độ Chuẩn...")
-                std_options = _build_options(is_standard=True)
-                self.driver = webdriver.Chrome(options=std_options)
+                self.driver = webdriver.Chrome(options=_build_options(is_standard=True))
             except Exception as e:
-                print(f"[{uid}] ❌ Lỗi khởi tạo cả Standard Driver: {e}")
-                self.last_start_error = "browser_start_failed"
-                self._release_profile_lock()
+                print(f"[{uid}] ❌ Lỗi khởi tạo Standard Driver: {e}")
+                self._abort_start("browser_start_failed")
                 return False
 
         # 4. TRUY CẬP VÀ XỬ LÝ ĐĂNG NHẬP
@@ -403,57 +459,169 @@ class FacebookBot:
             self.driver.get("https://www.facebook.com")
             time.sleep(2)
 
-            # Ưu tiên kiểm tra phiên đăng nhập sẵn có trong Profile trước
-            if not self.is_logged_in():
-                print(f"[{uid}] Chưa đăng nhập từ Profile. Tiến hành nạp Cookie...")
-                _inject_cookies(self.driver, cookie_file_path)
+            # Chỉ nạp cookie khi phiên hiện tại không phải của đúng UID.
+            if not self._session_cookies_ok(uid):
+                print(
+                    f"[{uid}] Chưa có phiên hợp lệ cho UID này. "
+                    f"Nạp cookie từ {cookie_file_path}..."
+                )
+                self._inject_cookies(self.driver, cookie_file_path)
+            else:
+                print(f"[{uid}] Profile đã có phiên đăng nhập đúng UID.")
 
-            # 5. XÁC MINH TRẠNG THÁI ĐĂNG NHẬP LẦN CUỐI
-            logged_in = self.is_logged_in()
-            if not logged_in:
-                print(f"[{uid}] Đăng nhập thất bại / Checkpoint!")
-                self.last_start_error = "login_failed"
+            # 5. XÁC MINH TRẠNG THÁI ĐĂNG NHẬP (1 lần duy nhất)
+            if not self.is_logged_in(expected_uid=uid):
+                print(f"[{uid}] Đăng nhập thất bại / Checkpoint / Sai tài khoản!")
+                if self.last_start_error is None:
+                    self.last_start_error = "login_failed"
                 self.close()
+                return False
 
-            return logged_in
+            self._persist_cookies(uid)
+            return True
 
         except Exception as e:
             print(f"[{uid}] ❌ Lỗi trong quá trình điều hướng/truy cập: {e}")
-            self.last_start_error = "browser_navigation_failed"
-            self.close()
+            self._abort_start("browser_navigation_failed")
             return False
+
+    def _abort_start(self, error: str):
+        """Đặt lỗi rồi dọn sạch driver/profile/lock."""
+        self.last_start_error = error
+        self.close()
+
+    def _inject_cookies(self, driver_instance, file_path) -> bool:
+        """Nạp cookie từ file vào browser đang mở."""
+        if not os.path.exists(file_path):
+            print(f"Không tìm thấy file cookie tại: {file_path}")
+            return False
+
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                cookies = json.load(f)
+
+            driver_instance.get("https://www.facebook.com")
+            time.sleep(1)
+
+            success_count = 0
+            for cookie in cookies:
+                cookie_dict = {
+                    "name": cookie.get("name"),
+                    "value": cookie.get("value"),
+                    "domain": cookie.get("domain", ".facebook.com"),
+                    "path": cookie.get("path", "/"),
+                    "secure": cookie.get("secure", True),
+                }
+
+                expiry = cookie.get("expirationDate", cookie.get("expiry"))
+                if expiry is not None:
+                    try:
+                        cookie_dict["expiry"] = int(float(expiry))
+                    except (ValueError, TypeError):
+                        pass
+
+                try:
+                    driver_instance.add_cookie(cookie_dict)
+                    success_count += 1
+                except Exception as cookie_error:
+                    print(f"[Cookie] Bỏ qua cookie lỗi: {cookie_error}")
+
+            driver_instance.refresh()
+            time.sleep(2)
+            print(f"Đã nạp thành công {success_count}/{len(cookies)} Cookie.")
+            return True
+        except Exception as e:
+            print(f"Lỗi khi đọc/nạp Cookie: {str(e)}")
+            return False
+
+    def _session_cookies_ok(self, uid: str) -> bool:
+        """Kiểm tra nhanh cookie hiện tại có thuộc đúng UID không (không điều hướng)."""
+        try:
+            cookies = {
+                cookie.get("name"): cookie.get("value")
+                for cookie in self.driver.get_cookies()
+            }
+        except Exception:
+            return False
+        return cookies.get("c_user") == str(uid) and bool(cookies.get("xs"))
+
+    def _persist_cookies(self, uid: str):
+        """Ghi cookie từ browser về kho nguồn để lần chạy sau dùng được."""
+        try:
+            cookies = self.driver.get_cookies()
+        except Exception as error:
+            print(f"[{uid}] Không đọc được cookie từ browser: {error}")
+            return
+
+        try:
+            path = get_profile_manager().cookies.save(uid, cookies)
+            print(f"[{uid}] Đã cập nhật cookie nguồn: {path}")
+        except Exception as error:
+            print(f"[{uid}] Không ghi được cookie nguồn: {error}")
 
 
     # -------------------------
     # Module đăng nhập & quản lý Cookie
     # -------------------------
     def save_cookies(self):
+        """Ghi cookie hiện tại của browser về kho nguồn."""
+        if not self.driver or not self._session:
+            print("❌ Save cookies failed: browser chưa được khởi tạo")
+            return False
+
         try:
-            with open(self.cookie_file, "wb") as f:
-                pickle.dump(self.driver.get_cookies(), f)
-
-            print("🍪 Cookies updated")
+            path = get_profile_manager().cookies.save(
+                self._session.uid, self.driver.get_cookies()
+            )
+            print(f"🍪 Cookies updated → {path}")
             return True
-
         except Exception as e:
             print(f"❌ Save cookies failed: {e}")
             return False
 
-    def is_logged_in(self):
+    def is_logged_in(self, expected_uid: str = None):
+        """Xác minh phiên đăng nhập và (tuỳ chọn) đúng tài khoản."""
         driver = self.driver
+        if driver is None:
+            return False
 
-        cookies = {c["name"] for c in driver.get_cookies()}
-        print(cookies)
+        try:
+            cookies = {c["name"]: c["value"] for c in driver.get_cookies()}
+        except Exception:
+            return False
+
+        print(f"Cookie hiện có: {sorted(cookies)}")
+
         # Fast fail
         if "c_user" not in cookies or "xs" not in cookies:
             return False
 
-        # Verify session
-        driver.get("https://www.facebook.com/me")
+        # Không cho phép chạy nhầm tài khoản khi profile còn session người khác.
+        if expected_uid and str(cookies["c_user"]) != str(expected_uid):
+            self.last_start_error = "account_mismatch"
+            print(
+                f"[Login] Cookie thuộc UID {cookies['c_user']} "
+                f"nhưng cần {expected_uid}."
+            )
+            return False
 
-        WebDriverWait(driver, 10).until(
-            lambda d: d.execute_script("return document.readyState") == "complete"
-        )
+        # Verify session
+        try:
+            driver.get("https://www.facebook.com/me")
+            WebDriverWait(driver, 10).until(
+                lambda d: d.execute_script("return document.readyState") == "complete"
+            )
+        except Exception as e:
+            print(f"[Login] Không xác minh được phiên: {e}")
+            return False
+
+        current_url = (driver.current_url or "").lower()
+        if any(
+            marker in current_url
+            for marker in ("/login", "/checkpoint", "/recover", "/two_step_verification")
+        ):
+            print(f"[Login] Bị chuyển hướng xác minh: {current_url}")
+            return False
 
         return True
     
@@ -514,10 +682,19 @@ class FacebookBot:
     # -------------------------
     # Scan uid from group members
     # --
-    def log_raw_response(self, res_data: dict, filename: str = "data.jsonl"):
+    def log_raw_response(self, res_data: dict, filename: str = None):
         """
-        Log request GraphQL
+        Log request GraphQL (mặc định: logs/<uid>/requests.jsonl).
         """
+        if not filename:
+            base = self.log_dir or os.path.join(APP_DIR, "logs")
+            os.makedirs(base, exist_ok=True)
+            filename = os.path.join(base, "requests.jsonl")
+        else:
+            folder = os.path.dirname(os.path.abspath(filename))
+            if folder:
+                os.makedirs(folder, exist_ok=True)
+
         with open(filename, "a", encoding="utf-8") as f:
             f.write(json.dumps(res_data, ensure_ascii=False) + "\n")
     
@@ -720,6 +897,12 @@ class FacebookBot:
         except Exception as e:
             print(f"⚠️ Lỗi fetch ngầm Group ID từ {group_input}: {e}")
             return None
+        finally:
+            # Khôi phục timeout để không ép fetch_group_members (10s) xuống 5s.
+            try:
+                self.driver.set_script_timeout(30)
+            except Exception:
+                pass
 
     def scrape_group_members(
         self, 
@@ -798,12 +981,12 @@ class FacebookBot:
                 while attempt < retries and not self.is_stopped():
                     attempt += 1
                     raw_res = self.fetch_group_members(group_id, cursor=cursor, count=batch_size, doc_id=value['doc_id'], friendly_name=value['friendly_name'])
-                    self.log_raw_response(raw_res, filename="requests_log.jsonl")
+                    self.log_raw_response(raw_res)
 
                     # 1. Xử lý an toàn chống NoneType/Null
                     data = raw_res.get("data") if isinstance(raw_res, dict) else None
-                    
-                    if "error" not in raw_res and isinstance(data, dict):
+
+                    if isinstance(raw_res, dict) and "error" not in raw_res and isinstance(data, dict):
                         node_data = data.get("node")
                         
                         # Nếu node tồn tại (không bị null do FB block)
@@ -907,9 +1090,20 @@ class FacebookBot:
         if unlimited:
             print(f"\n[HOÀN THÀNH] Đã cào TẤT CẢ {len(collected_uids)} UIDs trong nhóm!")
 
-        # Xuất kết quả
-        convert_to_spreadsheet(f"data\\raw\\{group_id}.jsonl", f"{group_id}.xlsx")
-        convert_to_spreadsheet(f"data\\raw\\{group_id}.jsonl", f"{group_id}.csv")
+        # Xuất kết quả (data/<uid>/raw → data/<uid>/exports)
+        raw_path = os.path.join(
+            self.data_dir or os.path.join(APP_DIR, "data", "raw"),
+            f"{group_id}.jsonl",
+        )
+        if os.path.exists(raw_path):
+            convert_to_spreadsheet(
+                raw_path, f"{group_id}.xlsx", output_dir=self.exports_dir
+            )
+            convert_to_spreadsheet(
+                raw_path, f"{group_id}.csv", output_dir=self.exports_dir
+            )
+        else:
+            print(f"[Export] Không tìm thấy {raw_path}, bỏ qua xuất Excel/CSV.")
 
         return len(collected_uids)
 
@@ -997,16 +1191,37 @@ class FacebookBot:
     # -------------------------
 
     def close(self):
-        """Hàm đóng trình duyệt an toàn"""
+        """Đóng browser, chờ Chrome thoát hẳn rồi mới nhả profile.
+
+        Thứ tự quan trọng: nếu nhả lock trước khi chrome.exe chết, task kế tiếp
+        sẽ mở lại đúng profile đó và gặp lỗi DevToolsActivePort.
+        """
+        session = self._session
+        profile_path = self._profile_path
+
         try:
             if self.driver:
                 try:
                     self.driver.quit()
-                except Exception:
-                    pass
+                except Exception as error:
+                    print(f"[Close] driver.quit lỗi: {error}")
                 self.driver = None
+
+            if profile_path and os.path.isdir(profile_path):
+                wait_for_profile_release(profile_path, timeout=6)
         finally:
+            if session is not None:
+                dispose_session(session)
+            self._session = None
+            self._profile_path = None
+            self._release_uid_mutex()
             self._release_profile_lock()
+
+    def _release_uid_mutex(self):
+        mutex = self._uid_mutex
+        self._uid_mutex = None
+        if mutex is not None:
+            mutex.release()
 
     def type_content_to_editor(self, editor, content):
         def insert_to_editor(editor, text):
@@ -1300,17 +1515,20 @@ class FacebookBot:
                         if not group_id or group_id in ["joins", "feed", "discover", "create"]:
                             continue
 
-                        numeric_id = self.get_numeric_group_id(group_id)
-                            
+                        numeric_id = self.get_numeric_group_id(group_id) or group_id
+                        resolved_id = str(numeric_id)
+
                         group_info = {
                             "group_name": title,
-                            "group_id": numeric_id,
+                            "group_id": resolved_id,
                             "group_url": f"https://www.facebook.com/groups/{group_id}/"
                         }
-                        
-                        # Kiểm tra trùng lặp theo ID
-                        if not any(g['group_id'] == group_id for g in joined_groups):
-                            print(f"✅ Đã tìm thấy: {title} (ID: {group_id})")
+
+                        # Kiểm tra trùng lặp theo ID đã resolve
+                        if not any(
+                            str(g["group_id"]) == resolved_id for g in joined_groups
+                        ):
+                            print(f"✅ Đã tìm thấy: {title} (ID: {resolved_id})")
                             joined_groups.append(group_info)
                             
                 except Exception:
@@ -1488,7 +1706,7 @@ class FacebookBot:
         
         for img_path in img_paths:
             file_name = img_path.split('\\')[-1]
-            file_path = os.path.join(BASE_DIR, "bot_media_tmp", file_name)
+            file_path = os.path.join(APP_DIR, "bot_media_tmp", file_name)
             file_input.send_keys(file_path)
             # Nghỉ một chút giữa mỗi lần nạp file ảnh tiếp theo
             time.sleep(random.uniform(1.0, 2.0))

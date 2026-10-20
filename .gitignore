@@ -1,5 +1,9 @@
 /profiles/
 
+# Runtime data / cookie store (chứa cookie tài khoản)
+/storage/
+/logs/
+
 # Python
 /__pycache__/
 *.py[cod]

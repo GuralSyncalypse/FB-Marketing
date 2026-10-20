@@ -25,6 +25,8 @@ class UidScanScreen(ctk.CTkFrame):
 
         self.scan_results = []
         self.stop_event = threading.Event()  # Cờ tín hiệu dừng thread
+        self.current_bot = None
+        self._raw_dir = os.path.join(bot.APP_DIR, "data", "raw")
 
         apply_theme()  # Bảo đảm theme sẵn sàng khi màn hình được khởi tạo
         self._build_ui()
@@ -201,7 +203,7 @@ class UidScanScreen(ctk.CTkFrame):
     # =========================================================================
     # LOGIC CHẠY TỰ ĐỘNG VỚI SELENIUM THREADING
     # =========================================================================
-    def handle_save_batch(self, batch_data, file_name="output.jsonl", folder_path="data\\raw"):
+    def handle_save_batch(self, batch_data, file_name="output.jsonl", folder_path=None):
         """
         Hàm lưu dữ liệu vào thư mục chỉ định.
         Tự động tạo thư mục nếu chưa có.
@@ -209,11 +211,9 @@ class UidScanScreen(ctk.CTkFrame):
         if not batch_data:
             return
 
-        # 1. Ghép đường dẫn file với thư mục
-        if folder_path:
-            full_path = os.path.join(folder_path, file_name)
-        else:
-            full_path = file_name
+        # 1. Ghép đường dẫn file với thư mục (mặc định: data/<uid>/raw)
+        folder_path = folder_path or self._raw_dir
+        full_path = os.path.join(folder_path, file_name)
 
         # 2. Tạo thư mục cha (nếu chưa tồn tại)
         dir_name = os.path.dirname(full_path)
@@ -250,8 +250,19 @@ class UidScanScreen(ctk.CTkFrame):
         self.stop_event.clear()
         self.scan_results.clear()
         self.tree_results.delete(*self.tree_results.get_children())
-        max_members = self.spin_max_members_var.get()
-        retries = self.spin_retries_var.get()
+
+        try:
+            max_members = self.spin_max_members_var.get()
+            retries = self.spin_retries_var.get()
+        except tk.TclError:
+            messagebox.showerror(
+                "Lỗi", "Giới hạn UID và số lần thử lại phải là số nguyên."
+            )
+            return
+
+        # Mỗi tài khoản ghi vào data/<uid>/raw
+        self._raw_dir = os.path.join(bot.APP_DIR, "data", user_id, "raw")
+        user_agent = self.controller.get_user_agent()
 
         # 3. Vô hiệu hóa nút Bắt đầu & Kích hoạt nút Dừng
         self.btn_start.configure(state="disabled", text="Đang quét...")
@@ -261,12 +272,12 @@ class UidScanScreen(ctk.CTkFrame):
         # 4. Tạo thread chạy Selenium ngầm (daemon=True)
         scan_thread = threading.Thread(
             target=self.run_selenium_scan_process,
-            args=(user_id, source_groups, max_members, retries),
+            args=(user_id, source_groups, max_members, retries, user_agent),
             daemon=True
         )
         scan_thread.start()
 
-    def run_selenium_scan_process(self, user, target_groups, max_members, retries):
+    def run_selenium_scan_process(self, user, target_groups, max_members, retries, user_agent=""):
         """Hàm thực thi logic Selenium chạy ngầm trong Thread."""
         print(f"\n[Selenium Quét UID] Bắt đầu tiến trình cho UID: {user}...")
         total_found = 0
@@ -280,12 +291,13 @@ class UidScanScreen(ctk.CTkFrame):
                 on_save_batch=self.handle_save_batch
             )
             bot_obj.stop_event = self.stop_event
+            self.current_bot = bot_obj
 
             if self.stop_event.is_set():
                 return
 
             # Đăng nhập bằng Cookies
-            if not bot_obj.start_browser(user, user_agent=self.controller.get_user_agent(), driver_type="undetected"):
+            if not bot_obj.start_browser(user, user_agent=user_agent, driver_type="undetected"):
                 error_message = bot_obj.get_start_error_message()
                 self.after(0, lambda msg=error_message: messagebox.showerror("Lỗi", msg))
                 return
@@ -342,6 +354,8 @@ class UidScanScreen(ctk.CTkFrame):
                 except Exception:
                     pass
                 bot_obj = None
+
+            self.current_bot = None
 
             # Cập nhật UI kết thúc
             is_stopped = self.stop_event.is_set()

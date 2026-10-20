@@ -28,6 +28,7 @@ class SmsScreen(ctk.CTkFrame):
 		self.parent = parent
 		self.controller = controller
 		self.user_list = []
+		self.current_bot = None
 		apply_theme()
 		self._build_ui()
 
@@ -445,6 +446,7 @@ class SmsScreen(ctk.CTkFrame):
 		obj = None
 		try:
 			obj = bot.FacebookBot(self.controller.is_demo_mode)
+			self.current_bot = obj
 			obj.user_agent = settings["user_agent"]
 			success = obj.start_browser(
 				user, user_agent=settings["user_agent"]
@@ -539,6 +541,7 @@ class SmsScreen(ctk.CTkFrame):
 		finally:
 			if obj:
 				obj.close()
+			self.current_bot = None
 			self.after(
 				0,
 				lambda: self.btn_start.configure(

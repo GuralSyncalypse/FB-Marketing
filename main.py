@@ -9,13 +9,19 @@ import urllib.parse
 import customtkinter as ctk
 
 import bot
+from services.cookie_store import CookieStore
 from services.local_server import start_local_server
+from services.profile_manager import ProfileManager, load_config, save_config
 from services.ui_theme import TitledFrame, apply_theme
 from views.dev_screen import DevelopScreen
 from views.post_screen import PostScreen
 from views.post_scan_screen import PostScanScreen
 from views.sms_screen import SmsScreen
 from views.uid_scan_screen import UidScanScreen
+
+
+BASE_DIR = bot.APP_DIR
+GROUPS_FILE = os.path.join(BASE_DIR, "groups_saved.json")
 
 
 # ================= CLASS GIAO DIỆN CHÍNH (APP) =================
@@ -36,8 +42,13 @@ class App(ctk.CTk):
     self.protocol("WM_DELETE_WINDOW", self.__on_close)
 
     # --- Biến cấu hình chung ---
-    self.is_demo_mode = False
+    config = load_config(BASE_DIR)
+    self.is_demo_mode = bool(config.get("demo_mode", False))
+    self.profile_mode = config.get("profile_mode", "persistent")
+    self.profile_manager = ProfileManager(BASE_DIR)
     self.empty_uid = "Chờ tín hiệu từ Extension..."
+    self._closing = False
+    self._group_scan_bot = None
 
 
     # --- Khởi tạo dữ liệu ---
@@ -49,6 +60,7 @@ class App(ctk.CTk):
     # Biến lưu trữ dữ liệu từ server
     self.uid = ""
     self.cookies = []
+    self.user_agent = ""
 
     # Biến dùng chung
     self.groups_data = []
@@ -107,7 +119,7 @@ class App(ctk.CTk):
     """Đọc dữ liệu của User chỉ trong 1 dòng"""
     try:
         self.screens["Quét UID"].refresh_groups_preview()
-        with open("groups_saved.json", "r", encoding="utf-8") as f:
+        with open(GROUPS_FILE, "r", encoding="utf-8") as f:
             raw_data = json.load(f)
             data = self._normalize_saved_groups_data(raw_data)
             # Lấy trực tiếp groups của uid, nếu không có trả về []
@@ -120,7 +132,7 @@ class App(ctk.CTk):
       if not self.uid:
           return False
 
-      file_path = "groups_saved.json"
+      file_path = GROUPS_FILE
       data = {}
 
       # 1. Đọc file cũ
@@ -142,15 +154,48 @@ class App(ctk.CTk):
       return True
 
   def __on_close(self):
-    print("Đang lưu trạng thái ứng dụng...")
+    if getattr(self, "_closing", False):
+      return
+    self._closing = True
+    print("Đang dừng tác vụ và lưu trạng thái ứng dụng...")
 
-    # Pipeline 1: Lưu dữ liệu nhóm hiện tại của User
+    # 1. Yêu cầu dừng + đóng mọi browser đang chạy. Nếu bỏ bước này,
+    #    chrome.exe sẽ mồ côi và giữ profile → lần mở sau gặp DevToolsActivePort.
+    for name, screen in list(getattr(self, "screens", {}).items()):
+      stop_event = getattr(screen, "stop_event", None)
+      if stop_event is not None:
+        try:
+          stop_event.set()
+        except Exception:
+          pass
+
+      bot_obj = getattr(screen, "current_bot", None)
+      if bot_obj is not None:
+        try:
+          # close() đã chờ/kill chrome và nhả profile lock bên trong.
+          bot_obj.close()
+        except Exception as e:
+          print(f"[Close] {name}: {e}")
+
+    # Bot của tab "Quét nhóm" không thuộc screen nào.
+    group_scan_bot = getattr(self, "_group_scan_bot", None)
+    if group_scan_bot is not None:
+      try:
+        group_scan_bot.close()
+      except Exception as e:
+        print(f"[Close] Quét nhóm: {e}")
+
+    # 2. Lưu dữ liệu nhóm hiện tại của User
     try:
       self.save_data()
     except Exception as e:
       print(f"Không thể lưu trạng thái ứng dụng: {e}")
-    finally:
-      self.destroy()  # Giải phóng giao diện và thoát hẳn
+
+    # 3. Cho worker một nhịp ngắn để thoát vòng lặp rồi mới đóng UI
+    try:
+      self.after(400, self.destroy)
+    except Exception:
+      self.destroy()
 
   # ================= THANH MENU BAR (TASKBAR) =================
   def __build_menu(self):
@@ -173,13 +218,13 @@ class App(ctk.CTk):
     if choice == "Cấu hình hệ thống":
       self.open_settings_window()
     elif choice == "Thoát":
-      self.quit()
+      self.__on_close()
 
   def open_settings_window(self):
     """Mở cửa sổ Popup Cài đặt hệ thống"""
     settings_win = ctk.CTkToplevel(self)
     settings_win.title("Cài đặt hệ thống")
-    settings_win.geometry("380x200")
+    settings_win.geometry("440x420")
     settings_win.resizable(False, False)
     settings_win.grab_set()  # Khóa tương tác với màn hình chính khi popup đang mở
 
@@ -190,7 +235,7 @@ class App(ctk.CTk):
 
     # Khung chứa nội dung cài đặt
     form_frame = ctk.CTkFrame(settings_win, fg_color="transparent")
-    form_frame.pack(fill="both", expand=True, padx=10, pady=10)
+    form_frame.pack(fill="both", expand=True, padx=18, pady=10)
 
     # Biến quản lý trạng thái Checkbox
     chk_demo_var = tk.BooleanVar(value=getattr(self, "is_demo_mode", False))
@@ -198,26 +243,102 @@ class App(ctk.CTk):
     # --- TÙY CHỌN DEMO MODE (CHECKBOX) ---
     chk_demo = ctk.CTkCheckBox(
         form_frame,
-        text=" Demo Mode",
+        text=" Demo Mode (hiện cửa sổ Chrome)",
         variable=chk_demo_var,
     )
-    chk_demo.pack(anchor="center", pady=15)
+    chk_demo.pack(anchor="w", pady=(0, 12))
+
+    # --- CHẾ ĐỘ PROFILE ---
+    ctk.CTkLabel(
+        form_frame, text="Chế độ profile Chrome:", anchor="w"
+    ).pack(anchor="w", pady=(0, 4))
+
+    mode_var = tk.StringVar(value=getattr(self, "profile_mode", "persistent"))
+    ctk.CTkRadioButton(
+        form_frame,
+        text="Profile bền (khuyến nghị)",
+        variable=mode_var,
+        value="persistent",
+    ).pack(anchor="w", pady=2)
+    ctk.CTkRadioButton(
+        form_frame,
+        text="Profile mới mỗi lần chạy (dùng để test)",
+        variable=mode_var,
+        value="fresh",
+    ).pack(anchor="w", pady=2)
+
+    ctk.CTkLabel(
+        form_frame,
+        text=(
+            "Profile bền: giữ phiên đăng nhập, khởi động nhanh.\n"
+            "Profile mới: tạo từ storage/cookies/<uid>.json rồi xoá sau khi xong.\n"
+            "Cookie nguồn được Extension cập nhật tự động."
+        ),
+        justify="left",
+        anchor="w",
+        font=ctk.CTkFont(size=11),
+    ).pack(anchor="w", pady=(4, 12))
 
     # Hàm xử lý khi bấm nút Lưu
     def save_settings():
         self.is_demo_mode = chk_demo_var.get()
+        self.profile_mode = mode_var.get()
 
-        # Lưu trạng thái vào file config.json (nếu có)
-        if hasattr(self, "save_config_to_file"):
-            self.save_config_to_file()
+        try:
+            save_config(
+                BASE_DIR,
+                profile_mode=self.profile_mode,
+                demo_mode=self.is_demo_mode,
+            )
+        except Exception as e:
+            messagebox.showerror("Lỗi", f"Không lưu được cấu hình: {e}")
+            return
 
         status_text = "BẬT" if self.is_demo_mode else "TẮT"
-        messagebox.showinfo("Thông báo", f"Đã lưu cài đặt thành công!\nTrạng thái Demo Mode: {status_text}")
+        messagebox.showinfo(
+            "Thông báo",
+            "Đã lưu cài đặt thành công!\n"
+            f"Demo Mode: {status_text}\n"
+            f"Profile: {self.profile_mode}",
+        )
         settings_win.destroy()
 
-    # Nút Lưu cấu hình
-    btn_save = ctk.CTkButton(settings_win, text="Lưu cấu hình", command=save_settings)
-    btn_save.pack(pady=(0, 20))
+    def reset_profile():
+        uid = (getattr(self, "uid", "") or "").strip()
+        if not uid:
+            messagebox.showwarning(
+                "Thông báo", "Chưa nhận được UID từ Extension."
+            )
+            return
+
+        if not messagebox.askyesno(
+            "Xác nhận",
+            f"Tạo lại profile Chrome cho UID {uid}?\n\n"
+            "Profile cũ sẽ được đổi tên thành <uid>.bak-<thời gian> và giữ lại.\n"
+            "Cookie nguồn không bị xoá.",
+        ):
+            return
+
+        try:
+            backup = self.profile_manager.reset(uid)
+            detail = backup.name if backup else "không có profile cũ"
+            messagebox.showinfo(
+                "Hoàn tất", f"Đã tạo lại profile.\nBackup: {detail}"
+            )
+        except Exception as e:
+            messagebox.showerror("Lỗi", str(e))
+
+    # Nút điều khiển
+    action_frame = ctk.CTkFrame(settings_win, fg_color="transparent")
+    action_frame.pack(fill="x", padx=18, pady=(0, 18))
+
+    ctk.CTkButton(
+        action_frame, text="Tạo lại profile", command=reset_profile
+    ).pack(side="left", fill="x", expand=True, padx=(0, 6))
+
+    ctk.CTkButton(
+        action_frame, text="Lưu cấu hình", command=save_settings
+    ).pack(side="right", fill="x", expand=True, padx=(6, 0))
 
   # =========================================================================
 
@@ -546,13 +667,17 @@ class App(ctk.CTk):
 
   # ================= CÁC HÀM XỬ LÝ LOGIC =================
   def save_to_profile_folder(self, uid: str, cookies: list):
-    """Lưu file cookies.json vào thư mục profiles/{uid}"""
-    profile_dir = os.path.join("profiles", uid)
-    os.makedirs(profile_dir, exist_ok=True)  # Tự động tạo thư mục nếu chưa có
+    """Lưu cookie vào kho nguồn storage/cookies/<uid>.json.
 
-    cookie_file_path = os.path.join(profile_dir, "cookies.json")
-    with open(cookie_file_path, "w", encoding="utf-8") as f:
-        json.dump(cookies, f, indent=4, ensure_ascii=False)
+    Profile Chrome sẽ được seed từ đây mỗi lần mở (xem bot.start_browser).
+    """
+    try:
+      path = CookieStore(BASE_DIR).save(uid, cookies)
+      print(f"[Cookie] Đã lưu cookie nguồn: {path}")
+    except ValueError:
+      print(f"[Cookie] Bỏ qua UID không hợp lệ: {uid!r}")
+    except Exception as e:
+      print(f"[Cookie] Không ghi được cookie cho {uid}: {e}")
 
   def _update_ui_after_scan(self):
     self.lbl_group_count_var.set(f"Đã quét: {len(self.groups_data)} groups")
@@ -565,19 +690,27 @@ class App(ctk.CTk):
 
   def _process_server_events(self):
     """Xử lý dữ liệu server trên main thread của Tkinter."""
+    if self._closing:
+      return
+
     try:
       while True:
         self._apply_server_received(self._server_events.get_nowait())
     except Empty:
       pass
 
-    if self.winfo_exists():
+    if not self._closing and self.winfo_exists():
       self.after(100, self._process_server_events)
 
   def _apply_server_received(self, data: dict):
-    self.uid = data.get("uid", "")
-    self.cookies = data.get("cookies", [])
-    self.user_agent = data.get("user_agent", "")
+    uid = str(data.get("uid", "") or "").strip()
+    if not uid.isdigit():
+      print(f"[Server] Bỏ qua payload có UID không hợp lệ: {uid!r}")
+      return
+
+    self.uid = uid
+    self.cookies = data.get("cookies", []) or []
+    self.user_agent = data.get("user_agent", "") or ""
 
     self.ent_uid_shared.configure(state="normal")
     self.ent_uid_shared.delete(0, tk.END)
@@ -609,6 +742,7 @@ class App(ctk.CTk):
     worker = None
     try:
         worker = bot.FacebookBot(visualize=self.is_demo_mode)
+        self._group_scan_bot = worker
 
         success = worker.start_browser(
             uid=user, user_agent=self.user_agent
@@ -645,6 +779,7 @@ class App(ctk.CTk):
     finally:
         if worker:
             worker.close()
+        self._group_scan_bot = None
         reset_scan_button = getattr(self, "_reset_group_scan_button", None)
         if callable(reset_scan_button):
             self.after(0, reset_scan_button)

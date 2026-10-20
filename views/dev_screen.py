@@ -86,6 +86,7 @@ class DevelopScreen(ctk.CTkFrame):
 
         # Biến lưu trữ đối tượng bot hiện tại để có thể điều khiển từ luồng chính
         self.current_bot = None
+        self.stop_event = threading.Event()
         self.is_stopping = False  # Cờ đánh dấu người dùng chủ động bấm dừng
 
         # ==================== KHUNG BÊN PHẢI ====================
@@ -236,15 +237,13 @@ class DevelopScreen(ctk.CTkFrame):
         """Hàm xử lý khi người dùng nhấn nút Dừng"""
         if self.current_bot:
             self.is_stopping = True
+            self.stop_event.set()
             self.btn_stop.configure(state="disabled", text="Đang dừng...")
-            print("[Dev Mode] Đang yêu cầu dừng tiến trình Selenium...")
-
-            # Đóng trình duyệt từ luồng chính, việc này sẽ kích hoạt Exception ở luồng ngầm và dừng lại
-            try:
-                self.current_bot.close()
-            except Exception as e:
-                print(f"[Dev Mode] Lỗi khi đóng bot: {e}")
-            self.lbl_status.configure(text="Trạng thái: Sẵn sàng", text_color=status_color("blue"))
+            self.lbl_status.configure(
+                text="Trạng thái: Đang dừng an toàn...",
+                text_color=status_color("orange"),
+            )
+            print("[Dev Mode] Đã gửi tín hiệu dừng tới worker.")
         else:
             messagebox.showwarning("Thông báo", "Không có tiến trình nào đang chạy!")
 
@@ -265,7 +264,11 @@ class DevelopScreen(ctk.CTkFrame):
 
 
             # 2. Khởi tạo Bot và Đăng nhập
-            self.current_bot = bot.FacebookBot(self.controller.is_demo_mode)
+            self.stop_event.clear()
+            self.current_bot = bot.FacebookBot(
+                visualize=self.controller.is_demo_mode,
+                stop_event=self.stop_event,
+            )
             self.after(0, lambda: self.lbl_status.configure(text="Trạng thái: Đang đăng nhập...", text_color=status_color("orange")))
             success = self.current_bot.start_browser(user, user_agent=self.controller.get_user_agent())
             if not success:

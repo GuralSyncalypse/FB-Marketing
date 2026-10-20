@@ -25,6 +25,7 @@ class PostScreen(ctk.CTkFrame):
         self.controller = controller
         self.image_paths = []
         self.worker = None
+        self.current_bot = None
 
         apply_theme()
         self._build_ui()
@@ -191,6 +192,7 @@ class PostScreen(ctk.CTkFrame):
             ))
 
             driver = bot.FacebookBot(self.controller.is_demo_mode)
+            self.current_bot = driver
             driver.user_agent = self.controller.user_agent
 
             success = driver.start_browser(uid, user_agent=self.controller.get_user_agent())
@@ -203,7 +205,7 @@ class PostScreen(ctk.CTkFrame):
             success_count = 0
             fail_count = 0
 
-            media_dir = os.path.join(bot.BASE_DIR, "bot_media_tmp")
+            media_dir = os.path.join(bot.APP_DIR, "bot_media_tmp")
             os.makedirs(media_dir, exist_ok=True)
 
             prepared_paths = []
@@ -251,5 +253,6 @@ class PostScreen(ctk.CTkFrame):
                     driver.close()
                 except Exception:
                     pass
+            self.current_bot = None
             self.after(0, lambda: self.btn_start.configure(state="normal", text="Đăng bài"))
             self.after(0, lambda: self.btn_select_images.configure(state="normal"))
