@@ -4,6 +4,8 @@
 
 Tài liệu này ghi nhận kết quả rà soát `main.py` và các màn hình trong `views/`, tập trung vào luồng Tkinter, Selenium, lưu trạng thái và xử lý thread.
 
+> **Cập nhật:** luồng `undetected_chromedriver` (UC) đã được loại bỏ hoàn toàn. Bot hiện chỉ dùng Selenium Standard, profile được quản lý tập trung theo UID (`services/profile_manager.py`), cookie lưu tại `storage/cookies/<uid>.json`. Các mô tả UC bên dưới chỉ mang tính lịch sử.
+
 Kiểm tra cú pháp hiện tại đạt `COMPILE_OK`. Chưa thực hiện chạy Facebook/Selenium thực tế vì cần môi trường Chrome, profile và tài khoản tương ứng.
 
 ## Các vấn đề chính

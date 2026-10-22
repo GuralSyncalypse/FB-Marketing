@@ -1,1 +1,1 @@
-pyinstaller --noconfirm --onefile --add-data "chromedriver.exe;." --hidden-import="bot" --hidden-import="selenium" --collect-all undetected_chromedriver --collect-all selenium --collect-all customtkinter main.py
+pyinstaller --noconfirm --onefile --add-data "chromedriver.exe;." --hidden-import="bot" --hidden-import="selenium" --collect-all selenium --collect-all customtkinter main.py

@@ -19,6 +19,9 @@ import pickle
 import os
 import re
 import json
+import uuid
+import sys
+import urllib.parse
 import requests
 
 group_id = '2396395143940094'
@@ -36,6 +39,41 @@ payload = {
     "fb_dtsg": "",
     "doc_id": doc_id
 }
+
+
+def parse_graphql_text(text):
+    """Parse JSON GraphQL; fallback cho BOM và NDJSON nhiều object."""
+    clean = (text or "").lstrip("\ufeff").strip()
+    try:
+        return json.loads(clean), "json"
+    except json.JSONDecodeError as first_error:
+        lines = [line.strip() for line in clean.splitlines() if line.strip()]
+        if len(lines) > 1:
+            objects = []
+            for line in lines:
+                try:
+                    objects.append(json.loads(line))
+                except json.JSONDecodeError:
+                    objects = []
+                    break
+            if objects:
+                merged = {"data": {"serpResponse": {"results": {"edges": []}}}}
+                for obj in objects:
+                    results = (
+                        ((obj.get("data") or {}).get("serpResponse") or {}).get("results")
+                        if isinstance(obj, dict)
+                        else None
+                    )
+                    if isinstance(results, dict):
+                        edges = results.get("edges")
+                        if isinstance(edges, list):
+                            merged["data"]["serpResponse"]["results"]["edges"].extend(edges)
+                        if results.get("page_info"):
+                            merged["data"]["serpResponse"]["results"]["page_info"] = results["page_info"]
+                    if isinstance(obj, dict) and obj.get("extensions"):
+                        merged["extensions"] = obj["extensions"]
+                return merged, "ndjson"
+        raise first_error
 
 class FacebookBot:
     def __init__(self, email, password):
@@ -144,6 +182,193 @@ class FacebookBot:
             });
         """
         return self.driver.execute_async_script(js_script, str(group_id), cursor, count)
+
+    def fetch_search_posts_raw(
+        self,
+        keyword: str,
+        cursor: str = None,
+        count: int = 10,
+        doc_id: str = "39411546341825607",
+        friendly_name: str = "SearchCometResultsPaginatedResultsQuery",
+    ) -> dict:
+        """Gọi GraphQL Search và trả về raw text để test tay."""
+        variables = {
+            "allow_streaming": False,
+            "args": {
+                "callsite": "COMET_GLOBAL_SEARCH",
+                "config": {
+                    "exact_match": False,
+                    "high_confidence_config": None,
+                    "intercept_config": None,
+                    "sts_disambiguation": None,
+                    "watch_config": None,
+                },
+                "context": {"bsid": str(uuid.uuid4()), "tsid": None},
+                "experience": {
+                    "client_defined_experiences": ["ADS_PARALLEL_FETCH"],
+                    "encoded_server_defined_params": None,
+                    "fbid": None,
+                    "type": "GLOBAL_SEARCH",
+                },
+                "filters": [],
+                "text": str(keyword or ""),
+            },
+            "count": int(count),
+            "cursor": cursor,
+            "feedLocation": "SEARCH",
+            "feedbackSource": 23,
+            "fetch_filters": True,
+            "focusCommentID": None,
+            "locale": None,
+            "privacySelectorRenderLocation": "COMET_STREAM",
+            "referringStoryRenderLocation": None,
+            "renderLocation": "search_results_page",
+            "scale": 1,
+            "stream_initial_count": 0,
+            "useDefaultActor": False,
+            "__relay_internal__pv__GHLShouldChangeAdIdFieldNamerelayprovider": True,
+            "__relay_internal__pv__GHLShouldChangeSponsoredDataFieldNamerelayprovider": True,
+            "__relay_internal__pv__CometFeedStory_enable_reactor_facepilerelayprovider": False,
+            "__relay_internal__pv__CometFeedStory_enable_social_bubblesrelayprovider": False,
+            "__relay_internal__pv__CometFeedStory_enable_post_permalink_white_space_clickrelayprovider": False,
+            "__relay_internal__pv__CometUFICommentActionLinksRewriteEnabledrelayprovider": True,
+            "__relay_internal__pv__CometUFICommentAvatarStickerAnimatedImagerelayprovider": False,
+            "__relay_internal__pv__IsWorkUserrelayprovider": False,
+            "__relay_internal__pv__TestPilotShouldIncludeDemoAdUseCaserelayprovider": False,
+            "__relay_internal__pv__FBReels_deprecate_short_form_video_context_gkrelayprovider": True,
+            "__relay_internal__pv__CometUFI_dedicated_comment_routable_dialog_gkrelayprovider": True,
+            "__relay_internal__pv__FBReels_enable_view_dubbed_audio_type_gkrelayprovider": True,
+            "__relay_internal__pv__CometFeedShareMedia_shouldPrefetchShareImagerelayprovider": True,
+            "__relay_internal__pv__CometImmersivePhotoCanUserDisable3DMotionrelayprovider": False,
+            "__relay_internal__pv__WorkCometIsEmployeeGKProviderrelayprovider": False,
+            "__relay_internal__pv__IsMergQAPollsrelayprovider": False,
+            "__relay_internal__pv__FBReelsMediaFooter_comet_enable_reels_ads_gkrelayprovider": True,
+            "__relay_internal__pv__CometUFIReactionsEnableShortNamerelayprovider": False,
+            "__relay_internal__pv__CometUFICommentAutoTranslationTyperelayprovider": "AUTO_TRANSLATE",
+            "__relay_internal__pv__CometUFIShareActionMigrationrelayprovider": True,
+            "__relay_internal__pv__CometUFISingleLineUFIrelayprovider": True,
+            "__relay_internal__pv__relay_provider_comet_ufi_ssr_seo_deferrelayprovider": True,
+            "__relay_internal__pv__FBReelsIFUTileContent_reelsIFUPlayOnHoverrelayprovider": True,
+            "__relay_internal__pv__GroupsCometGYSJFeedItemHeightrelayprovider": 206,
+            "__relay_internal__pv__StoriesShouldEnablePhotosensitiveContentWarningrelayprovider": False,
+            "__relay_internal__pv__ShouldEnableBakedInTextStoriesrelayprovider": False,
+            "__relay_internal__pv__StoriesShouldIncludeFbNotesrelayprovider": True,
+        }
+
+        js_script = """
+            const done = arguments[arguments.length - 1];
+            const variablesJson = arguments[0];
+            const docId = arguments[1];
+            const friendlyName = arguments[2];
+
+            try {
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => {
+                    controller.abort();
+                    done({ error: "JS_FETCH_TIMEOUT" });
+                }, 15000);
+
+                let dtsgToken = "", userId = "", lsdToken = "";
+                try { dtsgToken = (window.require && require('DTSGInitialData').token) || ""; } catch(e){}
+                try { userId = (window.require && require('CurrentUserInitialData').USER_ID) || ""; } catch(e){}
+                try { lsdToken = (window.require && require('LSD').token) || ""; } catch(e){}
+
+                if (!dtsgToken) {
+                    const m = document.cookie.match(/fb_dtsg=([^;]+)/);
+                    if (m) dtsgToken = decodeURIComponent(m[1]);
+                }
+                if (!userId) {
+                    const m = document.cookie.match(/c_user=([0-9]+)/);
+                    if (m) userId = m[1];
+                }
+                if (!dtsgToken || !userId) {
+                    clearTimeout(timeoutId);
+                    return done({ error: "MISSING_AUTH_TOKENS" });
+                }
+
+                let sum = 0;
+                for (let i = 0; i < dtsgToken.length; i++) sum += dtsgToken.charCodeAt(i);
+                const jazoest = '2' + sum;
+
+                let rev = "", spinT = "";
+                try { rev = (window.SiteData && window.SiteData.client_revision) || ""; } catch(e){}
+                try { spinT = (window.Env && window.Env.start_time) || ""; } catch(e){}
+
+                const payloadMap = {
+                    'av': userId,
+                    '__user': userId,
+                    'fb_dtsg': dtsgToken,
+                    'jazoest': jazoest,
+                    'lsd': lsdToken,
+                    'fb_api_caller_class': 'RelayModern',
+                    'fb_api_req_friendly_name': friendlyName,
+                    'server_timestamps': 'true',
+                    'doc_id': docId,
+                    'variables': variablesJson,
+                    '__a': '1',
+                    '__comet_req': '15'
+                };
+                if (rev) payloadMap['__rev'] = rev;
+                if (spinT) payloadMap['__spin_t'] = spinT;
+
+                fetch('https://www.facebook.com/api/graphql/', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                        'X-Asbd-Id': '359341',
+                        'X-Fb-Friendly-Name': friendlyName,
+                        'X-Fb-Lsd': lsdToken
+                    },
+                    body: new URLSearchParams(payloadMap).toString(),
+                    credentials: 'include',
+                    signal: controller.signal
+                })
+                .then(async res => {
+                    clearTimeout(timeoutId);
+                    const text = await res.text();
+                    done({
+                        status: res.status,
+                        content_type: res.headers.get('content-type') || '',
+                        text: text
+                    });
+                })
+                .catch(err => {
+                    clearTimeout(timeoutId);
+                    if (err.name === 'AbortError') return;
+                    done({ error: err.toString() });
+                });
+            } catch(topErr) {
+                done({ error: "CRITICAL_JS_ERROR: " + topErr.toString() });
+            }
+        """
+        return self.driver.execute_async_script(
+            js_script,
+            json.dumps(variables, ensure_ascii=False),
+            str(doc_id),
+            str(friendly_name),
+        )
+
+    def fetch_search_posts(self, keyword: str, cursor: str = None, count: int = 10) -> dict:
+        """Parse raw response; nếu lỗi trả kèm raw để lưu ra file."""
+        raw = self.fetch_search_posts_raw(keyword, cursor=cursor, count=count)
+        if not isinstance(raw, dict):
+            return {"error": "INVALID_RESPONSE", "raw": raw}
+        if raw.get("error"):
+            return raw
+        try:
+            payload, parse_mode = parse_graphql_text(raw.get("text") or "")
+        except Exception as error:
+            return {
+                "error": "INVALID_JSON_RESPONSE",
+                "parse_error": str(error),
+                "status": raw.get("status"),
+                "content_type": raw.get("content_type"),
+                "raw": raw.get("text") or "",
+            }
+        payload["_parse_mode"] = parse_mode
+        payload["_status"] = raw.get("status")
+        payload["_content_type"] = raw.get("content_type")
+        return payload
 
     def scrape_group_members(self, group_id: str, max_members: int = 5000, batch_size: int = 10, start_cursor=None) -> list:
             """
@@ -1456,6 +1681,65 @@ uids = [
 email = 'gurasyn@gmail.com'
 password = 'saile123456!'
 
+SEARCH_KEYWORD = "ubuntu"
+
+
+def test_search_graphql_manual():
+    """Test tay GraphQL Search: lưu raw response và in chẩn đoán JSON."""
+    bot = FacebookBot(email, password)
+    try:
+        bot.ensure_login()
+        target_url = (
+            "https://www.facebook.com/search/posts/?q="
+            + urllib.parse.quote_plus(SEARCH_KEYWORD)
+        )
+        print(f"[Manual] Mở {target_url}")
+        bot.driver.get(target_url)
+        time.sleep(5)
+
+        result = bot.fetch_search_posts(SEARCH_KEYWORD, count=10)
+
+        if result.get("error"):
+            raw = result.get("raw") or ""
+            raw_path = "search_graphql_raw.txt"
+            with open(raw_path, "w", encoding="utf-8") as file:
+                file.write(raw)
+            print(f"[Manual] Lỗi: {result.get('error')}")
+            print(f"[Manual] Parse error: {result.get('parse_error')}")
+            print(f"[Manual] HTTP status: {result.get('status')}")
+            print(f"[Manual] Content-Type: {result.get('content_type')}")
+            print(f"[Manual] Raw length: {len(raw)}")
+            print(f"[Manual] BOM: {raw[:1]!r} -> {ord(raw[0]) if raw else None}")
+            print(f"[Manual] First 500: {raw[:500]!r}")
+            print(f"[Manual] Last 500: {raw[-500:]!r}")
+            print(f"[Manual] Đã lưu raw vào {raw_path}")
+            return
+
+        output_path = "search_graphql_response.json"
+        with open(output_path, "w", encoding="utf-8") as file:
+            json.dump(result, file, ensure_ascii=False, indent=2)
+
+        results = (((result.get("data") or {}).get("serpResponse") or {}).get("results") or {})
+        edges = results.get("edges") or []
+        roles = [((edge.get("node") or {}).get("role")) for edge in edges]
+        print(f"[Manual] Parse mode: {result.get('_parse_mode')}")
+        print(f"[Manual] HTTP status: {result.get('_status')}")
+        print(f"[Manual] Content-Type: {result.get('_content_type')}")
+        print(f"[Manual] Số edge: {len(edges)}")
+        print(f"[Manual] Roles: {roles}")
+        print(f"[Manual] page_info: {results.get('page_info')}")
+        print(f"[Manual] Đã lưu JSON vào {output_path}")
+    finally:
+        try:
+            input("[Manual] Nhấn Enter để đóng browser...")
+        except EOFError:
+            pass
+        try:
+            bot.close()
+        except Exception:
+            pass
+
+
 def main():
     start = time.perf_counter()
 
@@ -1474,4 +1758,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    if "--search-graphql" in sys.argv:
+        test_search_graphql_manual()
+    else:
+        main()

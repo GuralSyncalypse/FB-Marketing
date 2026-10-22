@@ -3,7 +3,6 @@ uvicorn
 jinja2
 rq
 selenium
-undetected-chromedriver
 openpyxl
 pandas
 beautifulsoup4

@@ -19,7 +19,7 @@ from services.ui_theme import (
 
 
 class PostScanScreen(ctk.CTkFrame):
-    """Giao diện cấu hình quét bài viết; chưa gọi crawler/Selenium."""
+    """Giao diện cấu hình quét bài viết và lưu kết quả ra file JSON."""
 
     def __init__(self, parent, controller):
         super().__init__(parent)
@@ -222,7 +222,10 @@ class PostScanScreen(ctk.CTkFrame):
 
         ctk.CTkLabel(
             right_frame.body,
-            text="Kết quả thực tế sẽ được hiển thị tại đây khi crawler được tích hợp.",
+            text=(
+                "Kết quả trích xuất được lưu ra file JSON trong thư mục "
+                "data/<uid>/raw; giao diện chưa hiển thị danh sách bài."
+            ),
             text_color=TEXT_MUTED,
             font=ctk.CTkFont(size=11, slant="italic"),
             justify="left",
@@ -325,7 +328,7 @@ class PostScanScreen(ctk.CTkFrame):
     def _run_post_scan_analysis(self, user_id, config):
         worker = None
         try:
-            # Phân tích thủ công luôn cần browser hiển thị, độc lập với Demo Mode.
+            # Trích xuất DOM cần browser hiển thị, độc lập với Demo Mode.
             worker = bot.FacebookBot(
                 visualize=True,
                 stop_event=self.stop_event,
@@ -335,7 +338,6 @@ class PostScanScreen(ctk.CTkFrame):
             if not worker.start_browser(
                 user_id,
                 user_agent=self.controller.get_user_agent(),
-                driver_type="undetected",
             ):
                 error_message = worker.get_start_error_message()
                 self.after(0, lambda msg=error_message: messagebox.showerror("Lỗi", msg))
@@ -344,7 +346,7 @@ class PostScanScreen(ctk.CTkFrame):
             self.after(
                 0,
                 lambda: self.lbl_status.configure(
-                    text="Trạng thái: Facebook đã mở. Có 30 phút để phân tích thủ công.",
+                    text="Trạng thái: Facebook đã mở. Đang trích xuất bài viết...",
                     text_color=SUCCESS_COLOR,
                 ),
             )
@@ -352,24 +354,46 @@ class PostScanScreen(ctk.CTkFrame):
                 scope=config["scope"],
                 keyword=config["keyword"],
                 group_ids=config["group_ids"],
-                pause_seconds=1800,
+                pause_seconds=0,
+                max_posts=config["max_posts"],
             )
             status = result.get("status", "completed")
-            source = result.get("source", "")
-            self.after(0, self.tree_results.insert, "", "end", values=(
-                config["scope"], source, "Chưa trích xuất", "", result.get("url", "")
-            ))
+            post_count = result.get("post_count", 0)
+            file_path = result.get("file_path")
+            if status == "completed":
+                message = (
+                    f"Trạng thái: Đã trích xuất {post_count} bài. "
+                    f"File: {file_path}"
+                )
+                text_color = SUCCESS_COLOR
+            elif status == "stopped":
+                message = (
+                    f"Trạng thái: Đã dừng. Đã lưu {post_count} bài"
+                    + (f": {file_path}" if file_path else ".")
+                )
+                text_color = ERROR_COLOR
+            elif status == "browser_closed":
+                message = (
+                    f"Trạng thái: Browser đã được đóng thủ công. Đã lưu {post_count} bài."
+                )
+                text_color = ERROR_COLOR
+            elif status == "feed_not_found":
+                message = "Trạng thái: Không tìm thấy feed bài viết để trích xuất."
+                text_color = ERROR_COLOR
+            elif status == "error":
+                message = (
+                    "Trạng thái: Lỗi khi trích xuất"
+                    + (f" ({result.get('error')})" if result.get("error") else ".")
+                    + (f" Đã lưu {post_count} bài." if post_count else "")
+                )
+                text_color = ERROR_COLOR
+            else:
+                message = "Trạng thái: Không trích xuất được bài viết nào."
+                text_color = WARNING_COLOR
             self.after(
                 0,
-                lambda: self.lbl_status.configure(
-                    text=(
-                        "Trạng thái: Đã dừng phiên phân tích."
-                        if status == "stopped"
-                        else "Trạng thái: Browser đã được đóng thủ công."
-                        if status == "browser_closed"
-                        else "Trạng thái: Hết thời gian phân tích; chưa trích xuất bài viết."
-                    ),
-                    text_color=ERROR_COLOR if status in ("stopped", "browser_closed") else SUCCESS_COLOR,
+                lambda text=message, color=text_color: self.lbl_status.configure(
+                    text=text, text_color=color
                 ),
             )
         except Exception as error:

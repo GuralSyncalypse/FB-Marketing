@@ -4,7 +4,6 @@ from selenium.webdriver.common.keys import Keys
 from concurrent.futures import ThreadPoolExecutor
 from selenium.webdriver.chrome.options import Options as StandardOptions
 from selenium.webdriver.support.ui import WebDriverWait
-import undetected_chromedriver as uc
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.common.exceptions import TimeoutException, NoSuchElementException, WebDriverException
@@ -18,6 +17,7 @@ import os
 import re
 import json
 import urllib.parse
+import uuid
 import pandas as pd
 import sys
 
@@ -39,13 +39,18 @@ else:
     APP_DIR = BASE_DIR
 
 from services.cookie_store import normalize_uid
+from services.graphql_post_extractor import extract_posts_from_graphql_response
+from services.post_extractor import (
+    dedupe_posts,
+    extract_posts,
+    parse_post_wrapper,
+    post_key,
+)
 from services.profile_manager import (
     ProfileManager,
-    ProfileMode,
     SessionProfile,
     UidMutex,
     dispose_session,
-    kill_profile_processes,
     wait_for_profile_release,
 )
 
@@ -314,10 +319,9 @@ class FacebookBot:
         uid: str,
         user_agent: str = None,
         proxy: str = None,
-        driver_type: str = "undetected",
         session: SessionProfile = None,
     ) -> bool:
-        """Khởi tạo Chrome trên profile của UID.
+        """Khởi tạo Chrome (Selenium Standard) trên profile của UID.
 
         `session` do ProfileManager tạo (persistent/fresh/reset). Nếu bỏ trống,
         bot tự lấy profile theo cấu hình `storage/config.json`.
@@ -366,93 +370,56 @@ class FacebookBot:
             self._abort_start("missing_cookies")
             return False
 
-        mode = driver_type or "undetected"
         ua = user_agent or getattr(self, "user_agent", None)
         visualize = getattr(self, "visualize", True)
 
-        # --- HÀM TẠO OPTIONS (dùng chung UC và Standard) ---
-        def _build_options(is_standard=False):
-            if is_standard:
-                options = StandardOptions()
-                options.add_argument(f"--user-data-dir={profile_path}")
-                options.add_argument(
-                    "--disable-blink-features=AutomationControlled"
-                )
-            else:
-                options = uc.ChromeOptions()
+        options = StandardOptions()
+        options.add_argument(f"--user-data-dir={profile_path}")
+        options.add_argument("--disable-blink-features=AutomationControlled")
 
-            if ua:
-                options.add_argument(f"--user-agent={ua}")
-            if proxy:
-                options.add_argument(f"--proxy-server={proxy}")
+        if ua:
+            options.add_argument(f"--user-agent={ua}")
+        if proxy:
+            options.add_argument(f"--proxy-server={proxy}")
 
-            # Tối ưu tài nguyên & Anti-Throttling
-            options.add_argument("--disable-gpu")
-            options.add_argument("--disable-software-rasterizer")
-            options.add_argument("--no-sandbox")
-            options.add_argument("--disable-dev-shm-usage")
-            options.add_argument("--disable-notifications")
-            options.add_argument("--disable-logging")
-            options.add_argument("--disable-background-timer-throttling")
-            options.add_argument("--disable-backgrounding-occluded-windows")
-            options.add_argument("--disable-renderer-backgrounding")
+        # Tối ưu tài nguyên & Anti-Throttling
+        options.add_argument("--disable-gpu")
+        options.add_argument("--disable-software-rasterizer")
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-dev-shm-usage")
+        options.add_argument("--disable-notifications")
+        options.add_argument("--disable-logging")
+        options.add_argument("--disable-background-timer-throttling")
+        options.add_argument("--disable-backgrounding-occluded-windows")
+        options.add_argument("--disable-renderer-backgrounding")
 
-            # Profile mới không được mở trang welcome của Chrome.
-            options.add_argument("--no-first-run")
-            options.add_argument("--no-default-browser-check")
+        # Profile mới không được mở trang welcome của Chrome.
+        options.add_argument("--no-first-run")
+        options.add_argument("--no-default-browser-check")
 
-            # Tác vụ tự động không cần media để giảm băng thông/RAM. Giá trị
-            # này được Chrome lưu vào profile, vì vậy analysis phải ghi đè rõ
-            # về 1 thay vì chỉ bỏ qua preference.
-            image_setting = 2 if self.browser_mode == "scan" else 1
-            prefs = {"profile.managed_default_content_settings.images": image_setting}
-            options.add_experimental_option("prefs", prefs)
+        # Tác vụ tự động không cần media để giảm băng thông/RAM. Giá trị
+        # này được Chrome lưu vào profile, vì vậy analysis phải ghi đè rõ
+        # về 1 thay vì chỉ bỏ qua preference.
+        image_setting = 2 if self.browser_mode == "scan" else 1
+        prefs = {"profile.managed_default_content_settings.images": image_setting}
+        options.add_experimental_option("prefs", prefs)
 
-            # Headless/UI
-            if not visualize:
-                options.add_argument("--window-size=1920,1080")
-                if is_standard:
-                    options.add_argument("--headless=new")
-            else:
-                options.add_argument("--start-maximized")
+        # Headless/UI
+        if not visualize:
+            options.add_argument("--window-size=1920,1080")
+            options.add_argument("--headless=new")
+        else:
+            options.add_argument("--start-maximized")
 
-            return options
-
-        # 3. KHỞI TẠO DRIVER (UC → fallback Standard)
+        # 3. KHỞI TẠO DRIVER
+        print(f"[{uid}] [Selenium] Khởi tạo Chrome (profile={profile.mode.value})...")
         self.driver = None
-
-        if mode == "undetected":
-            try:
-                print(
-                    f"[{uid}] [uc.Selenium] Khởi tạo UC "
-                    f"(profile={profile.mode.value})..."
-                )
-                self.driver = uc.Chrome(
-                    options=_build_options(is_standard=False),
-                    user_data_dir=profile_path,
-                    headless=not visualize,
-                    use_subprocess=True,
-                )
-            except Exception as e:
-                print(f"[{uid}] ⚠️ [uc.Selenium] Khởi tạo thất bại ({e}).")
-                print(
-                    f"[{uid}] 🔄 Dọn process còn sót rồi chuyển sang "
-                    "Selenium Standard..."
-                )
-                # UC có thể đã spawn chrome.exe trước khi lỗi. Không được mở
-                # Standard trên cùng profile khi process cũ còn giữ.
-                kill_profile_processes(profile_path, wait_seconds=6)
-                wait_for_profile_release(profile_path, timeout=4)
-                mode = "standard"
-
-        if mode == "standard" and self.driver is None:
-            try:
-                print(f"[{uid}] [Selenium Standard] Đang khởi tạo Chế độ Chuẩn...")
-                self.driver = webdriver.Chrome(options=_build_options(is_standard=True))
-            except Exception as e:
-                print(f"[{uid}] ❌ Lỗi khởi tạo Standard Driver: {e}")
-                self._abort_start("browser_start_failed")
-                return False
+        try:
+            self.driver = webdriver.Chrome(options=options)
+        except Exception as e:
+            print(f"[{uid}] ❌ Lỗi khởi tạo Chrome Driver: {e}")
+            self._abort_start("browser_start_failed")
+            return False
 
         # 4. TRUY CẬP VÀ XỬ LÝ ĐĂNG NHẬP
         try:
@@ -798,10 +765,40 @@ class FacebookBot:
                 .then(async res => {
                     clearTimeout(timeoutId);
                     const text = await res.text();
+                    const clean = text.replace(/^\\uFEFF/, '').trim();
                     try {
-                        done(JSON.parse(text));
+                        done(JSON.parse(clean));
                     } catch(jsonErr) {
-                        done({ error: "INVALID_JSON_RESPONSE", raw: text.substring(0, 300) });
+                        // Một số response bị chia thành nhiều JSON object (NDJSON).
+                        // Ghép riêng edges/page_info để parser vẫn dùng được.
+                        try {
+                            const lines = clean.split(/\\r?\\n/).map(s => s.trim()).filter(Boolean);
+                            if (lines.length > 1) {
+                                const objects = lines.map(line => JSON.parse(line));
+                                const merged = { data: { serpResponse: { results: { edges: [] } } } };
+                                for (const obj of objects) {
+                                    const results = obj && obj.data && obj.data.serpResponse && obj.data.serpResponse.results;
+                                    if (results && Array.isArray(results.edges)) {
+                                        merged.data.serpResponse.results.edges.push(...results.edges);
+                                    }
+                                    if (results && results.page_info) {
+                                        merged.data.serpResponse.results.page_info = results.page_info;
+                                    }
+                                    if (obj && obj.extensions) {
+                                        merged.extensions = obj.extensions;
+                                    }
+                                }
+                                return done(merged);
+                            }
+                        } catch (streamErr) {}
+
+                        done({
+                            error: "INVALID_JSON_RESPONSE",
+                            parse_error: jsonErr.toString(),
+                            raw: clean.substring(0, 2000),
+                            raw_length: clean.length,
+                            content_type: res.headers.get('content-type') || ''
+                        });
                     }
                 })
                 .catch(err => {
@@ -819,6 +816,208 @@ class FacebookBot:
             str(group_id),
             cursor,
             count,
+            str(doc_id),
+            str(friendly_name),
+        )
+
+    def fetch_search_posts(
+        self,
+        keyword: str,
+        cursor: str = None,
+        count: int = 10,
+        doc_id: str = "39411546341825607",
+        friendly_name: str = "SearchCometResultsPaginatedResultsQuery",
+    ) -> dict:
+        """Gọi GraphQL Search giống cách ``fetch_group_members`` lấy token live.
+
+        Không hardcode fb_dtsg/lsd/telemetry. Cursor là chuỗi end_cursor lấy từ
+        ``data.serpResponse.results.page_info`` của response trước đó.
+        """
+        variables = {
+            "allow_streaming": False,
+            "args": {
+                "callsite": "COMET_GLOBAL_SEARCH",
+                "config": {
+                    "exact_match": False,
+                    "high_confidence_config": None,
+                    "intercept_config": None,
+                    "sts_disambiguation": None,
+                    "watch_config": None,
+                },
+                "context": {"bsid": str(uuid.uuid4()), "tsid": None},
+                "experience": {
+                    "client_defined_experiences": ["ADS_PARALLEL_FETCH"],
+                    "encoded_server_defined_params": None,
+                    "fbid": None,
+                    "type": "GLOBAL_SEARCH",
+                },
+                "filters": [],
+                "text": str(keyword or ""),
+            },
+            "count": int(count),
+            "cursor": cursor,
+            "feedLocation": "SEARCH",
+            "feedbackSource": 23,
+            "fetch_filters": True,
+            "focusCommentID": None,
+            "locale": None,
+            "privacySelectorRenderLocation": "COMET_STREAM",
+            "referringStoryRenderLocation": None,
+            "renderLocation": "search_results_page",
+            "scale": 1,
+            "stream_initial_count": 0,
+            "useDefaultActor": False,
+            # Các Relay provider variable bắt buộc của persisted query. Thiếu
+            # chúng Facebook trả missing_required_variable_value.
+            "__relay_internal__pv__GHLShouldChangeAdIdFieldNamerelayprovider": True,
+            "__relay_internal__pv__GHLShouldChangeSponsoredDataFieldNamerelayprovider": True,
+            "__relay_internal__pv__CometFeedStory_enable_reactor_facepilerelayprovider": False,
+            "__relay_internal__pv__CometFeedStory_enable_social_bubblesrelayprovider": False,
+            "__relay_internal__pv__CometFeedStory_enable_post_permalink_white_space_clickrelayprovider": False,
+            "__relay_internal__pv__CometUFICommentActionLinksRewriteEnabledrelayprovider": True,
+            "__relay_internal__pv__CometUFICommentAvatarStickerAnimatedImagerelayprovider": False,
+            "__relay_internal__pv__IsWorkUserrelayprovider": False,
+            "__relay_internal__pv__TestPilotShouldIncludeDemoAdUseCaserelayprovider": False,
+            "__relay_internal__pv__FBReels_deprecate_short_form_video_context_gkrelayprovider": True,
+            "__relay_internal__pv__CometUFI_dedicated_comment_routable_dialog_gkrelayprovider": True,
+            "__relay_internal__pv__FBReels_enable_view_dubbed_audio_type_gkrelayprovider": True,
+            "__relay_internal__pv__CometFeedShareMedia_shouldPrefetchShareImagerelayprovider": True,
+            "__relay_internal__pv__CometImmersivePhotoCanUserDisable3DMotionrelayprovider": False,
+            "__relay_internal__pv__WorkCometIsEmployeeGKProviderrelayprovider": False,
+            "__relay_internal__pv__IsMergQAPollsrelayprovider": False,
+            "__relay_internal__pv__FBReelsMediaFooter_comet_enable_reels_ads_gkrelayprovider": True,
+            "__relay_internal__pv__CometUFIReactionsEnableShortNamerelayprovider": False,
+            "__relay_internal__pv__CometUFICommentAutoTranslationTyperelayprovider": "AUTO_TRANSLATE",
+            "__relay_internal__pv__CometUFIShareActionMigrationrelayprovider": True,
+            "__relay_internal__pv__CometUFISingleLineUFIrelayprovider": True,
+            "__relay_internal__pv__relay_provider_comet_ufi_ssr_seo_deferrelayprovider": True,
+            "__relay_internal__pv__FBReelsIFUTileContent_reelsIFUPlayOnHoverrelayprovider": True,
+            "__relay_internal__pv__GroupsCometGYSJFeedItemHeightrelayprovider": 206,
+            "__relay_internal__pv__StoriesShouldEnablePhotosensitiveContentWarningrelayprovider": False,
+            "__relay_internal__pv__ShouldEnableBakedInTextStoriesrelayprovider": False,
+            "__relay_internal__pv__StoriesShouldIncludeFbNotesrelayprovider": True,
+        }
+
+        js_script = """
+            const done = arguments[arguments.length - 1];
+            const variablesJson = arguments[0];
+            const docId = arguments[1];
+            const friendlyName = arguments[2];
+
+            try {
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => {
+                    controller.abort();
+                    done({ error: "JS_FETCH_TIMEOUT" });
+                }, 15000);
+
+                let dtsgToken = "", userId = "", lsdToken = "";
+                try { dtsgToken = (window.require && require('DTSGInitialData').token) || ""; } catch(e){}
+                try { userId = (window.require && require('CurrentUserInitialData').USER_ID) || ""; } catch(e){}
+                try { lsdToken = (window.require && require('LSD').token) || ""; } catch(e){}
+
+                if (!dtsgToken) {
+                    const m = document.cookie.match(/fb_dtsg=([^;]+)/);
+                    if (m) dtsgToken = decodeURIComponent(m[1]);
+                }
+                if (!userId) {
+                    const m = document.cookie.match(/c_user=([0-9]+)/);
+                    if (m) userId = m[1];
+                }
+                if (!dtsgToken || !userId) {
+                    clearTimeout(timeoutId);
+                    return done({ error: "MISSING_AUTH_TOKENS" });
+                }
+
+                let sum = 0;
+                for (let i = 0; i < dtsgToken.length; i++) sum += dtsgToken.charCodeAt(i);
+                const jazoest = '2' + sum;
+
+                let rev = "", spinT = "";
+                try { rev = (window.SiteData && window.SiteData.client_revision) || ""; } catch(e){}
+                try { spinT = (window.Env && window.Env.start_time) || ""; } catch(e){}
+
+                const payloadMap = {
+                    'av': userId,
+                    '__user': userId,
+                    'fb_dtsg': dtsgToken,
+                    'jazoest': jazoest,
+                    'lsd': lsdToken,
+                    'fb_api_caller_class': 'RelayModern',
+                    'fb_api_req_friendly_name': friendlyName,
+                    'server_timestamps': 'true',
+                    'doc_id': docId,
+                    'variables': variablesJson,
+                    '__a': '1',
+                    '__comet_req': '15'
+                };
+                if (rev) payloadMap['__rev'] = rev;
+                if (spinT) payloadMap['__spin_t'] = spinT;
+
+                const payload = new URLSearchParams(payloadMap);
+                fetch('https://www.facebook.com/api/graphql/', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                        'X-Asbd-Id': '359341',
+                        'X-Fb-Friendly-Name': friendlyName,
+                        'X-Fb-Lsd': lsdToken
+                    },
+                    body: payload.toString(),
+                    credentials: 'include',
+                    signal: controller.signal
+                })
+                .then(async res => {
+                    clearTimeout(timeoutId);
+                    const text = await res.text();
+                    const clean = text.replace(/^\\uFEFF/, '').trim();
+                    try {
+                        done(JSON.parse(clean));
+                    } catch(jsonErr) {
+                        // Một số response bị chia thành nhiều JSON object (NDJSON).
+                        // Ghép riêng edges/page_info để parser vẫn dùng được.
+                        try {
+                            const lines = clean.split(/\\r?\\n/).map(s => s.trim()).filter(Boolean);
+                            if (lines.length > 1) {
+                                const objects = lines.map(line => JSON.parse(line));
+                                const merged = { data: { serpResponse: { results: { edges: [] } } } };
+                                for (const obj of objects) {
+                                    const results = obj && obj.data && obj.data.serpResponse && obj.data.serpResponse.results;
+                                    if (results && Array.isArray(results.edges)) {
+                                        merged.data.serpResponse.results.edges.push(...results.edges);
+                                    }
+                                    if (results && results.page_info) {
+                                        merged.data.serpResponse.results.page_info = results.page_info;
+                                    }
+                                    if (obj && obj.extensions) {
+                                        merged.extensions = obj.extensions;
+                                    }
+                                }
+                                return done(merged);
+                            }
+                        } catch (streamErr) {}
+
+                        done({
+                            error: "INVALID_JSON_RESPONSE",
+                            parse_error: jsonErr.toString(),
+                            raw: clean.substring(0, 2000),
+                            raw_length: clean.length,
+                            content_type: res.headers.get('content-type') || ''
+                        });
+                    }
+                })
+                .catch(err => {
+                    clearTimeout(timeoutId);
+                    if (err.name === 'AbortError') return;
+                    done({ error: err.toString() });
+                });
+            } catch(topErr) {
+                done({ error: "CRITICAL_JS_ERROR: " + topErr.toString() });
+            }
+        """
+        return self.driver.execute_async_script(
+            js_script,
+            json.dumps(variables, ensure_ascii=False),
             str(doc_id),
             str(friendly_name),
         )
@@ -1112,14 +1311,17 @@ class FacebookBot:
         scope: str,
         keyword: str = "",
         group_ids=None,
-        pause_seconds: int = 1800,
+        pause_seconds: int = 0,
+        max_posts: int = 100,
+        expand_content: bool = True,
     ) -> dict:
-        """Mở phạm vi quét bài và giữ browser để phân tích thủ công Facebook.
+        """Mở feed Facebook, trích xuất bài viết và lưu ra file JSON.
 
-        `scope="search"` mở Facebook Search theo từ khóa (phạm vi rộng).
-        `scope="groups"` mở group đầu tiên trong danh sách (phạm vi hẹp).
-        Hàm chưa trích xuất bài viết; đây là bước chuẩn bị để xác định selector
-        và request phù hợp trước khi tích hợp crawler.
+        `scope="search"` quét trang Search bài viết theo từ khóa.
+        `scope="groups"` quét lần lượt các group đã chọn.
+
+        Kết quả được ghi vào `data/<uid>/raw/posts_<scope>_<timestamp>.json`.
+        `pause_seconds` chỉ dùng khi cần giữ browser mở thêm để phân tích thủ công.
         """
         if not self.driver:
             raise RuntimeError("Browser chưa được khởi tạo.")
@@ -1130,63 +1332,398 @@ class FacebookBot:
             for group_id in (group_ids or [])
             if str(group_id).strip()
         ]
+        normalized_keyword = str(keyword or "").strip()
+        try:
+            max_posts = int(max_posts)
+        except (TypeError, ValueError):
+            max_posts = 100
+        if max_posts < 0:
+            max_posts = 0
 
         if normalized_scope == "search":
-            normalized_keyword = keyword.strip()
             if not normalized_keyword:
                 raise ValueError("Search tổng quát yêu cầu từ khóa.")
-            target_url = (
-                "https://www.facebook.com/search/posts/?q="
-                f"{urllib.parse.quote_plus(normalized_keyword)}"
-            )
+            targets = [
+                (
+                    "https://www.facebook.com/search/posts/?q="
+                    f"{urllib.parse.quote_plus(normalized_keyword)}",
+                    f"search:{normalized_keyword}",
+                    None,
+                )
+            ]
             source_label = f"search:{normalized_keyword}"
         elif normalized_scope == "groups":
             if not normalized_groups:
                 raise ValueError("Quét theo group yêu cầu ít nhất một group ID.")
-            target_url = f"https://www.facebook.com/groups/{normalized_groups[0]}"
-            source_label = f"group:{normalized_groups[0]}"
+            targets = [
+                (
+                    f"https://www.facebook.com/groups/{group_id}",
+                    f"group:{group_id}",
+                    group_id,
+                )
+                for group_id in normalized_groups
+            ]
+            source_label = f"groups:{','.join(normalized_groups)}"
         else:
             raise ValueError("Phạm vi quét không hợp lệ.")
 
-        self.driver.get(target_url)
-        wait_seconds = max(0, int(pause_seconds))
-        deadline = time.monotonic() + wait_seconds
+        try:
+            self.driver.set_page_load_timeout(60)
+        except Exception:
+            pass
+
+        collected: dict[str, dict] = {}
+        feed_found = False
+        browser_closed = False
+        extraction_error = None
+        last_url = targets[0][0]
+
         print(
-            f"[Post Scan] Opened {source_label}. "
-            f"Manual analysis pause: {wait_seconds} seconds."
+            f"[Post Scan] Bắt đầu trích xuất {source_label} "
+            f"(tối đa {max_posts if max_posts else 'không giới hạn'} bài)."
         )
 
-        while time.monotonic() < deadline:
-            if self.is_stopped():
-                print("[Post Scan] Manual analysis stopped.")
-                return {
-                    "status": "stopped",
-                    "scope": normalized_scope,
-                    "source": source_label,
-                    "url": target_url,
-                }
-            try:
-                # Khi người dùng đóng Chrome bằng tay, Selenium vẫn giữ object
-                # driver nhưng mọi lệnh tới session sẽ ném WebDriverException.
+        try:
+            for target_url, target_label, group_id in targets:
+                if self.is_stopped():
+                    break
+                if max_posts and len(collected) >= max_posts:
+                    break
                 if not self.driver.window_handles:
                     raise WebDriverException("Browser window is closed.")
-            except (WebDriverException, OSError):
-                print("[Post Scan] Browser was closed manually.")
-                return {
-                    "status": "browser_closed",
-                    "scope": normalized_scope,
-                    "source": source_label,
-                    "url": target_url,
-                }
-            time.sleep(min(1, deadline - time.monotonic()))
 
-        print("[Post Scan] Manual analysis pause completed.")
+                last_url = target_url
+                print(f"[Post Scan] Mở {target_label}...")
+                self.driver.get(target_url)
+
+                if not self._wait_for_post_feed(timeout=30):
+                    print(f"[Post Scan] Không tìm thấy feed tại {target_label}.")
+                    continue
+
+                feed_found = True
+
+                # Search GraphQL bổ sung timestamp/nội dung đầy đủ; DOM vẫn là fallback.
+                if normalized_scope == "search":
+                    remaining = max_posts - len(collected) if max_posts else 0
+                    try:
+                        graph_posts = self._collect_search_posts_from_graphql(
+                            normalized_keyword,
+                            max_posts=remaining,
+                        )
+                    except Exception as error:
+                        print(f"[Post Scan] Bỏ qua GraphQL search: {error}")
+                        graph_posts = []
+                    for post in graph_posts:
+                        collected.setdefault(post_key(post), post)
+
+                remaining = max_posts - len(collected) if max_posts else 0
+                posts = self._extract_posts_from_current_feed(
+                    scope=normalized_scope,
+                    group_id=group_id,
+                    max_posts=remaining,
+                    expand_content=expand_content,
+                )
+                for post in posts:
+                    collected.setdefault(post_key(post), post)
+                print(
+                    f"[Post Scan] {target_label}: thu được {len(posts)} bài "
+                    f"(tổng {len(collected)})."
+                )
+                if self.is_stopped():
+                    break
+
+        except (WebDriverException, OSError) as error:
+            browser_closed = True
+            print(f"[Post Scan] Browser bị đóng hoặc lỗi điều hướng: {error}")
+        except Exception as error:
+            # Vẫn lưu những bài đã thu được trước khi trả lỗi.
+            extraction_error = str(error)
+            print(f"[Post Scan] Lỗi khi trích xuất: {error}")
+
+        posts = dedupe_posts(collected.values())
+        if max_posts:
+            posts = posts[:max_posts]
+
+        file_path = None
+        if posts:
+            file_path = self._save_posts_json(
+                posts,
+                scope=normalized_scope,
+                keyword=normalized_keyword,
+                group_ids=normalized_groups,
+                source_label=source_label,
+            )
+            print(f"[Post Scan] Đã lưu {len(posts)} bài vào {file_path}.")
+
+        if self.is_stopped():
+            status = "stopped"
+        elif browser_closed:
+            status = "browser_closed"
+        elif extraction_error:
+            status = "error"
+        elif not feed_found and not posts:
+            status = "feed_not_found"
+        elif not posts:
+            status = "no_posts"
+        else:
+            status = "completed"
+
+        # Giữ browser mở thêm nếu người gọi thực sự yêu cầu phân tích thủ công.
+        wait_seconds = max(0, int(pause_seconds or 0))
+        if wait_seconds and status == "completed":
+            deadline = time.monotonic() + wait_seconds
+            print(f"[Post Scan] Giữ browser mở thêm {wait_seconds} giây.")
+            while time.monotonic() < deadline:
+                if self.is_stopped():
+                    status = "stopped"
+                    break
+                try:
+                    if not self.driver.window_handles:
+                        raise WebDriverException("Browser window is closed.")
+                except (WebDriverException, OSError):
+                    status = "browser_closed"
+                    break
+                time.sleep(max(0, min(1, deadline - time.monotonic())))
+
         return {
-            "status": "ready_for_extraction",
+            "status": status,
             "scope": normalized_scope,
             "source": source_label,
-            "url": target_url,
+            "url": last_url,
+            "post_count": len(posts),
+            "file_path": file_path,
+            "error": extraction_error,
         }
+
+    def _collect_search_posts_from_graphql(
+        self,
+        keyword: str,
+        max_posts: int = 0,
+        page_size: int = 10,
+    ) -> list[dict]:
+        """Lấy bài từ response GraphQL Search, có phân trang bằng end_cursor."""
+        collected: dict[str, dict] = {}
+        cursor = None
+        request_index = 0
+        limit = max_posts if max_posts and max_posts > 0 else 50
+
+        while not self.is_stopped() and len(collected) < limit:
+            request_index += 1
+            count = min(page_size, max(1, limit - len(collected)))
+            raw = self.fetch_search_posts(keyword, cursor=cursor, count=count)
+
+            if not isinstance(raw, dict) or raw.get("error"):
+                error = raw.get("error") if isinstance(raw, dict) else "INVALID_RESPONSE"
+                print(f"[Post Scan] GraphQL search #{request_index} lỗi: {error}")
+                break
+
+            posts = extract_posts_from_graphql_response(raw, scope="search")
+            new_count = 0
+            for post in posts:
+                key = post_key(post)
+                if key in collected:
+                    continue
+                collected[key] = post
+                new_count += 1
+
+            print(
+                f"[Post Scan] GraphQL search #{request_index}: "
+                f"+{new_count} bài (tổng {len(collected)})."
+            )
+
+            page_info = (
+                ((raw.get("data") or {}).get("serpResponse") or {}).get("results")
+                or {}
+            ).get("page_info") or {}
+            next_cursor = page_info.get("end_cursor")
+            if not page_info.get("has_next_page") or not next_cursor:
+                break
+            if next_cursor == cursor:
+                break
+            cursor = next_cursor
+
+            if not posts or not new_count:
+                # Tránh vòng lặp nếu Facebook trả lại cùng cursor/trang.
+                break
+            if len(collected) >= limit:
+                break
+            time.sleep(random.uniform(1.0, 2.0))
+
+        return list(collected.values())[:limit]
+
+    def _wait_for_post_feed(self, timeout: float = 30) -> bool:
+        """Chờ tới khi feed Facebook xuất hiện trong DOM."""
+        try:
+            WebDriverWait(self.driver, timeout).until(
+                lambda driver: driver.execute_script(
+                    "return document.querySelector('div[role=\"feed\"]') !== null;"
+                )
+            )
+            return True
+        except Exception:
+            return False
+
+    def _collect_post_wrappers(self):
+        """Lấy outerHTML của từng wrapper bài viết đang render trong feed."""
+        script = """
+            const feed = document.querySelector('div[role="feed"]');
+            if (!feed) return null;
+            const result = [];
+            for (const child of feed.children) {
+                if (child.querySelector('[data-ad-rendering-role="story_message"]')) {
+                    result.push(child.outerHTML);
+                }
+            }
+            return result;
+        """
+        try:
+            return self.driver.execute_script(script)
+        except (WebDriverException, OSError):
+            raise
+        except Exception:
+            return None
+
+    def _expand_post_content(self) -> int:
+        """Bấm các nút 'See more' / 'Xem thêm' để lấy nội dung đầy đủ hơn."""
+        script = """
+            const feed = document.querySelector('div[role="feed"]');
+            if (!feed) return 0;
+            let clicked = 0;
+            const nodes = feed.querySelectorAll('a, div[role="button"], span[role="button"]');
+            for (const node of nodes) {
+                const text = (node.innerText || '').trim();
+                if (text === 'See more' || text === 'Xem thêm') {
+                    try {
+                        node.click();
+                        clicked += 1;
+                    } catch (error) {}
+                }
+            }
+            return clicked;
+        """
+        try:
+            return int(self.driver.execute_script(script) or 0)
+        except Exception:
+            return 0
+
+    def _extract_posts_from_current_feed(
+        self,
+        scope: str,
+        group_id,
+        max_posts: int = 0,
+        expand_content: bool = True,
+    ) -> list[dict]:
+        """Cuộn feed, parse từng bài và trả về danh sách đã chống trùng."""
+        collected: dict[str, dict] = {}
+        stale_rounds = 0
+        scroll_rounds = 0
+        max_scroll_rounds = 80
+        fallback_used = False
+
+        while not self.is_stopped():
+            if expand_content:
+                clicked = self._expand_post_content()
+                if clicked:
+                    time.sleep(random.uniform(0.4, 0.8))
+
+            wrappers = self._collect_post_wrappers()
+            new_in_round = 0
+
+            if wrappers:
+                for wrapper_html in wrappers:
+                    post = parse_post_wrapper(
+                        wrapper_html, scope=scope, fallback_group_id=group_id
+                    )
+                    if not post:
+                        continue
+                    key = post_key(post)
+                    if key in collected:
+                        continue
+                    collected[key] = post
+                    new_in_round += 1
+            elif not fallback_used:
+                # Một số biến thể DOM không có role=feed trực tiếp.
+                fallback_used = True
+                for post in extract_posts(
+                    self.driver.page_source,
+                    scope=scope,
+                    fallback_group_id=group_id,
+                ):
+                    key = post_key(post)
+                    if key not in collected:
+                        collected[key] = post
+                        new_in_round += 1
+
+            if max_posts and len(collected) >= max_posts:
+                break
+            if self.is_stopped():
+                break
+
+            try:
+                self.driver.execute_script(
+                    "window.scrollTo(0, document.body.scrollHeight);"
+                )
+                time.sleep(random.uniform(1.2, 2.0))
+            except (WebDriverException, OSError):
+                raise
+
+            scroll_rounds += 1
+            if new_in_round:
+                stale_rounds = 0
+            else:
+                stale_rounds += 1
+
+            # Hết bài: không có bài mới sau nhiều lần cuộn.
+            if stale_rounds >= 4:
+                break
+            if scroll_rounds >= max_scroll_rounds:
+                break
+
+        posts = list(collected.values())
+        if max_posts:
+            posts = posts[:max_posts]
+        return posts
+
+    def _save_posts_json(
+        self,
+        posts: list[dict],
+        scope: str,
+        keyword: str,
+        group_ids: list[str],
+        source_label: str,
+    ) -> str:
+        """Ghi kết quả trích xuất ra data/<uid>/raw/posts_*.json."""
+        exported_at = time.strftime("%Y-%m-%dT%H:%M:%S")
+        for post in posts:
+            post.setdefault("scraped_at", exported_at)
+
+        if scope == "search":
+            safe_name = "search_" + keyword
+        else:
+            safe_name = f"groups_{len(group_ids)}"
+        safe_name = re.sub(r"[^A-Za-z0-9_-]+", "_", safe_name).strip("_")[:60]
+        if not safe_name:
+            safe_name = "posts"
+
+        target_dir = self.data_dir or os.path.join(APP_DIR, "data", "raw")
+        os.makedirs(target_dir, exist_ok=True)
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        file_path = os.path.join(
+            target_dir, f"posts_{safe_name}_{timestamp}.json"
+        )
+
+        payload = {
+            "scope": scope,
+            "keyword": keyword if scope == "search" else "",
+            "group_ids": list(group_ids),
+            "source": source_label,
+            "exported_at": exported_at,
+            "post_count": len(posts),
+            "posts": posts,
+        }
+        with open(file_path, "w", encoding="utf-8") as file:
+            json.dump(payload, file, ensure_ascii=False, indent=2)
+        return file_path
 
     # -------------------------
 

@@ -297,7 +297,7 @@ class UidScanScreen(ctk.CTkFrame):
                 return
 
             # Đăng nhập bằng Cookies
-            if not bot_obj.start_browser(user, user_agent=user_agent, driver_type="undetected"):
+            if not bot_obj.start_browser(user, user_agent=user_agent):
                 error_message = bot_obj.get_start_error_message()
                 self.after(0, lambda msg=error_message: messagebox.showerror("Lỗi", msg))
                 return
