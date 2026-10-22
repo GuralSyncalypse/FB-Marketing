@@ -9,6 +9,7 @@
 *.py[cod]
 *$py.class
 *.pyc
+*.pkl
 
 *.html
 *.jsonl
