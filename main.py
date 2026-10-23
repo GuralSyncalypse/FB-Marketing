@@ -14,8 +14,10 @@ from services.local_server import start_local_server
 from services.profile_manager import ProfileManager, load_config, save_config
 from services.ui_theme import TitledFrame, apply_theme
 from views.dev_screen import DevelopScreen
+from views.comment_scan_screen import CommentScanScreen
 from views.post_screen import PostScreen
 from views.post_scan_screen import PostScanScreen
+from views.reaction_scan_screen import ReactionScanScreen
 from views.sms_screen import SmsScreen
 from views.uid_scan_screen import UidScanScreen
 
@@ -640,6 +642,8 @@ class App(ctk.CTk):
         ("Bắn SMS", SmsScreen),
         ("Quét UID", UidScanScreen),
         ("Quét bài", PostScanScreen),
+        ("Quét bình luận", CommentScanScreen),
+        ("Quét reaction", ReactionScanScreen),
     ]
 
     self.tabs = []

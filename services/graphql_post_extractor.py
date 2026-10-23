@@ -4,6 +4,9 @@ Response mẫu nằm ở ``samples/response.json``. Dữ liệu bài viết khô
 trực tiếp ở ``edge.node`` mà nằm trong
 ``edge.rendering_strategy.view_model``. Với kết quả PUBLIC_POSTS, story nằm ở
 ``view_model.click_model.story``; với ads, story nằm ở ``view_model.story``.
+
+Facebook dùng nhiều role cho cùng một loại bài viết tuỳ luồng tìm kiếm:
+``PUBLIC_POSTS`` (tab Bài viết) và ``TOP_PUBLIC_POSTS`` (tab Bài đăng gần đây).
 """
 
 from __future__ import annotations
@@ -14,6 +17,7 @@ from typing import Any, Iterable
 
 GROUP_ID_RE = re.compile(r"/groups/(\d+)")
 POST_ID_RE = re.compile(r"(?:/posts/|story_fbid=|multi_permalinks=)(\d+)")
+POST_ROLES = frozenset({"PUBLIC_POSTS", "TOP_PUBLIC_POSTS"})
 MESSAGE_PATHS = (
     ("message",),
     ("comet_sections", "content", "story", "comet_sections", "message", "story", "message"),
@@ -304,7 +308,7 @@ def extract_posts_from_graphql_response(
     scope: str = "search",
     fallback_group_id: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Lấy các bài PUBLIC_POSTS từ response Search GraphQL.
+    """Lấy các bài PUBLIC_POSTS/TOP_PUBLIC_POSTS từ response Search GraphQL.
 
     Bỏ qua page/group card, quảng cáo và survey. Trả về danh sách theo đúng
     thứ tự xuất hiện trong response.
@@ -322,7 +326,7 @@ def extract_posts_from_graphql_response(
         if not isinstance(edge, dict):
             continue
         node = edge.get("node")
-        if not isinstance(node, dict) or node.get("role") != "PUBLIC_POSTS":
+        if not isinstance(node, dict) or node.get("role") not in POST_ROLES:
             continue
 
         view_model = _get_path(edge, ("rendering_strategy", "view_model"))

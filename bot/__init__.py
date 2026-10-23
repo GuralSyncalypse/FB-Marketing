@@ -1,44 +1,30 @@
-from selenium import webdriver
+"""FacebookBot: các tác vụ quét thành viên, bài viết và tương tác Facebook.
+
+Vòng đời browser nằm ở ``bot.browser.BrowserMixin``; đăng nhập/cookie nằm ở
+``bot.auth.AuthMixin``. Các nhóm chức năng còn lại sẽ tiếp tục được tách dần.
+"""
+
+from __future__ import annotations
+
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
-from concurrent.futures import ThreadPoolExecutor
-from selenium.webdriver.chrome.options import Options as StandardOptions
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.action_chains import ActionChains
-from selenium.common.exceptions import TimeoutException, NoSuchElementException, WebDriverException
-from openpyxl import Workbook
-from queue import Queue, Empty
-import threading
+from selenium.common.exceptions import (
+    NoSuchElementException,
+    TimeoutException,
+    WebDriverException,
+)
 import random
 import time
-import pickle
 import os
 import re
 import json
-import urllib.parse
-import uuid
+import datetime as dt
+import unicodedata
 import pandas as pd
-import sys
 
-# Console Windows có thể dùng cp1252 khi stdout bị redirect; log tiếng Việt
-# không được phép làm sập tiến trình.
-for _stream in (sys.stdout, sys.stderr):
-    try:
-        _stream.reconfigure(encoding="utf-8", errors="replace")
-    except Exception:
-        pass
-
-BASE_DIR = os.path.dirname(os.path.abspath(__file__)) # Thư mục /app
-
-# PyInstaller --onefile giải nén code vào thư mục tạm. Dữ liệu chạy (profile,
-# cookie, export, log) phải nằm cạnh file exe thì mới còn sau khi thoát.
-if getattr(sys, "frozen", False):
-    APP_DIR = os.path.dirname(os.path.abspath(sys.executable))
-else:
-    APP_DIR = BASE_DIR
-
-from services.cookie_store import normalize_uid
 from services.graphql_post_extractor import extract_posts_from_graphql_response
 from services.post_extractor import (
     dedupe_posts,
@@ -46,25 +32,134 @@ from services.post_extractor import (
     parse_post_wrapper,
     post_key,
 )
-from services.profile_manager import (
-    ProfileManager,
-    SessionProfile,
-    UidMutex,
-    dispose_session,
-    wait_for_profile_release,
+
+from .auth import AuthMixin
+from .browser import BrowserMixin
+from .comments import (
+    COMMENT_EXPORT_COLUMNS,
+    CommentMixin,
+    export_comments_to_spreadsheet,
 )
+from .reactions import (
+    REACTION_EXPORT_COLUMNS,
+    ReactionMixin,
+    export_reactions_to_spreadsheet,
+)
+from .graphql import (
+    GROUP_MEMBERS_DOC_ID,
+    GROUP_MEMBERS_FRIENDLY_NAME,
+    THINGS_IN_COMMON_DOC_ID,
+    THINGS_IN_COMMON_FRIENDLY_NAME,
+    GraphQLMixin,
+)
+from .paths import APP_DIR, BASE_DIR
+from .profiles import get_profile_manager
 
-_DEFAULT_PROFILE_MANAGER = None
-_DEFAULT_PROFILE_MANAGER_LOCK = threading.Lock()
+# Thời gian chờ Facebook tải lại feed sau khi bật filter "Bài đăng gần đây".
+RECENT_POSTS_SETTLE_SECONDS = 1.5
 
 
-def get_profile_manager() -> ProfileManager:
-    """Singleton quản lý profile/cookie trong phạm vi một process."""
-    global _DEFAULT_PROFILE_MANAGER
-    with _DEFAULT_PROFILE_MANAGER_LOCK:
-        if _DEFAULT_PROFILE_MANAGER is None:
-            _DEFAULT_PROFILE_MANAGER = ProfileManager(APP_DIR)
-        return _DEFAULT_PROFILE_MANAGER
+def _fold_label(text: str) -> str:
+    """Bỏ dấu tiếng Việt để so khớp aria-label không phân biệt ngôn ngữ."""
+    normalized = unicodedata.normalize("NFD", str(text or "").lower())
+    without_marks = "".join(
+        char for char in normalized if unicodedata.category(char) != "Mn"
+    )
+    return without_marks.replace("đ", "d")
+
+
+def is_recent_posts_label(label: str) -> bool:
+    """Nhận diện nhãn switch 'Recent posts' (Anh/Việt, có dấu hoặc không)."""
+    folded = _fold_label(label)
+    return (
+        "recent" in folded
+        or "gan day" in folded
+        or "moi nhat" in folded
+    )
+
+
+def _normalize_time_range(value) -> int | None:
+    """Đổi lựa chọn thời gian của UI/API thành số giờ.
+
+    Trả về ``None`` cho "không giới hạn". Hàm nhận cả nhãn tiếng Việt, tiếng
+    Anh và các khóa ngắn (``24h``, ``7d``, ``30d``, ``all``).
+    """
+    folded = _fold_label(value).replace("_", " ").strip()
+    if not folded or folded in {"all", "any", "0", "none"}:
+        return None
+    if "khong gioi han" in folded:
+        return None
+    if "24" in folded or "1d" in folded or "1 ngay" in folded:
+        return 24
+    if "7" in folded or "week" in folded or "tuan" in folded:
+        return 7 * 24
+    if "30" in folded or "month" in folded or "thang" in folded:
+        return 30 * 24
+    return None
+
+
+def _normalize_post_type(value) -> frozenset[str] | None:
+    """Đổi lựa chọn loại bài thành tập ``media_type`` cần giữ.
+
+    Trả về ``None`` cho "tất cả".
+    """
+    folded = _fold_label(value).replace("_", " ").strip()
+    if not folded or folded in {"all", "any", "tat ca"}:
+        return None
+    if "anh" in folded and "video" in folded:
+        return frozenset({"image", "video"})
+    if "link" in folded:
+        return frozenset({"link"})
+    if "van ban" in folded or folded == "text":
+        return frozenset({"text"})
+    if "media" in folded:
+        return frozenset({"image", "video"})
+    return None
+
+
+def _parse_published_at(value) -> dt.datetime | None:
+    """Parse ``published_at`` (ISO 8601 hoặc Unix timestamp) về UTC."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        try:
+            return dt.datetime.fromtimestamp(int(value), tz=dt.timezone.utc)
+        except (OverflowError, OSError, ValueError):
+            return None
+    if not isinstance(value, str) or not value.strip():
+        return None
+
+    text = value.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = dt.datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=dt.timezone.utc)
+    return parsed.astimezone(dt.timezone.utc)
+
+
+def _post_matches_filters(
+    post: dict,
+    post_type: frozenset[str] | None = None,
+    time_range_hours: int | None = None,
+    now: dt.datetime | None = None,
+) -> bool:
+    """Kiểm tra một bài có thỏa bộ lọc loại bài và khoảng thời gian không."""
+    if post_type is not None and post.get("media_type") not in post_type:
+        return False
+
+    if time_range_hours:
+        published_at = _parse_published_at(post.get("published_at"))
+        if published_at is None:
+            return False
+        reference = now or dt.datetime.now(dt.timezone.utc)
+        if published_at < reference - dt.timedelta(hours=time_range_hours):
+            return False
+
+    return True
 
 
 def convert_to_spreadsheet(json_filepath, output_filename=None, output_dir=None):
@@ -186,469 +281,182 @@ def convert_to_spreadsheet(json_filepath, output_filename=None, output_dir=None)
         f"\n📍 File được lưu tại: {final_output_path}"
     )
 
-class FacebookBot:
-    _profile_locks = {}
-    _profile_locks_guard = threading.Lock()
 
-    def __init__(
-        self,
-        visualize=False,
-        output_path="users.json",
-        stop_event=None,
-        on_save_batch=None,
-        browser_mode="scan",
-        profile_mode=None,
-    ):
-        self.driver = None
-        self.user_agent = None
-        self.output_path = output_path
-        self.stop_event = stop_event
-
-        self.visualize = visualize
-        # `scan` giữ tối ưu hiện có; `analysis` ưu tiên trang Facebook hiển thị đủ.
-        self.browser_mode = "analysis" if browser_mode == "analysis" else "scan"
-
-        self.on_save_batch = on_save_batch
-        self._buffer = []
-        self._profile_lock = None
-        self._profile_uid = None
-        self.last_start_error = None
-
-        # --- Vòng đời profile / session ---
-        self.profile_mode = profile_mode
-        self._session = None
-        self._uid_mutex = None
-        self._profile_path = None
-        self.data_dir = None
-        self.exports_dir = None
-        self.log_dir = None
-
-    def _acquire_profile_lock(self, uid: str) -> bool:
-        """Chỉ cho phép một browser session dùng cùng profile UID trong một app."""
-        normalized_uid = str(uid).strip()
-        if not normalized_uid:
-            print("[Profile Lock] Invalid UID.")
-            return False
-
-        with self._profile_locks_guard:
-            lock = self._profile_locks.setdefault(normalized_uid, threading.Lock())
-
-        if not lock.acquire(blocking=False):
-            print(f"[{normalized_uid}] [Profile Lock] UID is already in use.")
-            return False
-
-        self._profile_lock = lock
-        self._profile_uid = normalized_uid
-        return True
-
-    def _release_profile_lock(self):
-        """Nhả profile lock do chính instance bot này sở hữu."""
-        lock = self._profile_lock
-        uid = self._profile_uid
-        self._profile_lock = None
-        self._profile_uid = None
-
-        if lock:
-            try:
-                lock.release()
-                print(f"[{uid}] [Profile Lock] Released.")
-            except RuntimeError:
-                pass
-
-    def get_start_error_message(self) -> str:
-        messages = {
-            "profile_in_use": "UID đang có tác vụ khác. Vui lòng chờ tác vụ hiện tại hoàn tất.",
-            "invalid_uid": "UID không hợp lệ.",
-            "missing_cookies": "Chưa có cookie cho UID này. Hãy kết nối Extension để gửi lại.",
-            "account_mismatch": (
-                "Profile đang đăng nhập sai tài khoản so với UID nhận từ Extension. "
-                "Hãy reset profile hoặc đăng nhập lại."
-            ),
-            "profile_prepare_failed": "Không chuẩn bị được profile Chrome. Xem log để biết chi tiết.",
-            "browser_start_failed": "Không khởi động được Chrome (profile có thể đang bị giữ).",
-            "browser_navigation_failed": "Không truy cập được Facebook. Kiểm tra mạng/proxy.",
-            "login_failed": "Đăng nhập thất bại / Checkpoint!",
-        }
-        return messages.get(self.last_start_error, "Đăng nhập thất bại!")
-
-    def _init_data_dirs(self, uid: str):
-        """Mỗi tài khoản có vùng dữ liệu riêng: data/<uid>/..., logs/<uid>/..."""
-        self.data_dir = os.path.join(APP_DIR, "data", uid, "raw")
-        self.exports_dir = os.path.join(APP_DIR, "data", uid, "exports")
-        self.log_dir = os.path.join(APP_DIR, "logs", uid)
-        for path in (self.data_dir, self.exports_dir, self.log_dir):
-            os.makedirs(path, exist_ok=True)
-
-    def _flush(self, file_name=None):
-        """Gửi dữ liệu trong buffer đi lưu và xả rỗng buffer."""
-        if self._buffer and self.on_save_batch:
-            self.on_save_batch(self._buffer, file_name)
-            self._buffer = []
-
-    def is_stopped(self):
-        """Hàm phụ trợ kiểm tra xem người dùng đã bấm nút Dừng hay chưa."""
-        return self.stop_event is not None and self.stop_event.is_set()
-
-    def _save_checkpoint(self):
-        """Ghi dữ liệu hiện tại xuống đĩa (Autosave - Ghi đè file mới)."""
-        try:
-            temp_path = self.output_path + '.tmp'  # Tạo file tạm để ghi trước
-
-            # Lấy danh sách thành viên trực tiếp từ bộ nhớ đang cào
-            data = list(getattr(self, "collected", {}).values())
-
-            with open(temp_path, "w", encoding="utf-8") as f:
-                json.dump(
-                    data,
-                    f,
-                    ensure_ascii=False,
-                    indent=4,
-                )
-
-            # Đổi tên file an toàn (ghi đè file chính) tránh mất dữ liệu nếu bị ngắt điện
-            os.replace(temp_path, self.output_path)
-            print(
-                f"💾 [Autosave] Đã lưu an toàn {len(data)} thành viên vào đĩa ({self.output_path})."
-            )
-        except Exception as e:
-            print(f"⚠️ Không thể lưu checkpoint: {e}")
+POST_EXPORT_COLUMNS = (
+    "post_id",
+    "author_name",
+    "author_url",
+    "source_name",
+    "content",
+    "media_type",
+    "media_count",
+    "media_urls",
+    "reactions",
+    "comments",
+    "shares",
+    "published_at",
+    "permalink",
+    "group_id",
+    "scope",
+    "content_truncated",
+    "scraped_at",
+)
 
 
-    def start_browser(
-        self,
-        uid: str,
-        user_agent: str = None,
-        proxy: str = None,
-        session: SessionProfile = None,
-    ) -> bool:
-        """Khởi tạo Chrome (Selenium Standard) trên profile của UID.
+def _export_count(value):
+    """Chuẩn hóa reaction/comment/share count về int hoặc None."""
+    if isinstance(value, dict):
+        value = value.get("count")
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return int(value)
+    if isinstance(value, str) and value.strip().isdigit():
+        return int(value.strip())
+    return None
 
-        `session` do ProfileManager tạo (persistent/fresh/reset). Nếu bỏ trống,
-        bot tự lấy profile theo cấu hình `storage/config.json`.
-        """
-        self.last_start_error = None
 
-        try:
-            uid = normalize_uid(uid)
-        except ValueError:
-            self.last_start_error = "invalid_uid"
-            return False
+def _post_export_rows(posts: list[dict]) -> list[dict]:
+    rows = []
+    for post in posts:
+        if not isinstance(post, dict):
+            continue
+        media_urls = post.get("media_urls") or []
+        if isinstance(media_urls, str):
+            media_urls = [media_urls]
+        elif not isinstance(media_urls, (list, tuple)):
+            media_urls = []
+        media_urls = [str(url) for url in media_urls if url]
 
-        if not self._acquire_profile_lock(uid):
-            self.last_start_error = "profile_in_use"
-            return False
-
-        # Khóa liên process: hai bản app trên cùng máy không mở trùng profile.
-        mutex = UidMutex(uid)
-        if not mutex.acquired:
-            self.last_start_error = "profile_in_use"
-            self._release_profile_lock()
-            return False
-        self._uid_mutex = mutex
-
-        # --- Chuẩn bị profile (dọn chrome mồ côi + seed cookie) ---
-        try:
-            profile = session or get_profile_manager().prepare(uid, self.profile_mode)
-        except Exception as error:
-            print(f"[{uid}] Không chuẩn bị được profile: {error}")
-            self._abort_start("profile_prepare_failed")
-            return False
-
-        self._session = profile
-        self._profile_path = str(profile.path)
-        self.user_agent = user_agent
-        self._init_data_dirs(uid)
-
-        profile_path = self._profile_path
-        cookie_file_path = os.path.join(profile_path, "cookies.json")
-
-        if not os.path.exists(cookie_file_path) and not profile.is_persistent:
-            print(
-                f"[{uid}] Profile mới nhưng chưa có cookie tại "
-                f"storage/cookies/{uid}.json"
-            )
-            self._abort_start("missing_cookies")
-            return False
-
-        ua = user_agent or getattr(self, "user_agent", None)
-        visualize = getattr(self, "visualize", True)
-
-        options = StandardOptions()
-        options.add_argument(f"--user-data-dir={profile_path}")
-        options.add_argument("--disable-blink-features=AutomationControlled")
-
-        if ua:
-            options.add_argument(f"--user-agent={ua}")
-        if proxy:
-            options.add_argument(f"--proxy-server={proxy}")
-
-        # Tối ưu tài nguyên & Anti-Throttling
-        options.add_argument("--disable-gpu")
-        options.add_argument("--disable-software-rasterizer")
-        options.add_argument("--no-sandbox")
-        options.add_argument("--disable-dev-shm-usage")
-        options.add_argument("--disable-notifications")
-        options.add_argument("--disable-logging")
-        options.add_argument("--disable-background-timer-throttling")
-        options.add_argument("--disable-backgrounding-occluded-windows")
-        options.add_argument("--disable-renderer-backgrounding")
-
-        # Profile mới không được mở trang welcome của Chrome.
-        options.add_argument("--no-first-run")
-        options.add_argument("--no-default-browser-check")
-
-        # Tác vụ tự động không cần media để giảm băng thông/RAM. Giá trị
-        # này được Chrome lưu vào profile, vì vậy analysis phải ghi đè rõ
-        # về 1 thay vì chỉ bỏ qua preference.
-        image_setting = 2 if self.browser_mode == "scan" else 1
-        prefs = {"profile.managed_default_content_settings.images": image_setting}
-        options.add_experimental_option("prefs", prefs)
-
-        # Headless/UI
-        if not visualize:
-            options.add_argument("--window-size=1920,1080")
-            options.add_argument("--headless=new")
-        else:
-            options.add_argument("--start-maximized")
-
-        # 3. KHỞI TẠO DRIVER
-        print(f"[{uid}] [Selenium] Khởi tạo Chrome (profile={profile.mode.value})...")
-        self.driver = None
-        try:
-            self.driver = webdriver.Chrome(options=options)
-        except Exception as e:
-            print(f"[{uid}] ❌ Lỗi khởi tạo Chrome Driver: {e}")
-            self._abort_start("browser_start_failed")
-            return False
-
-        # 4. TRUY CẬP VÀ XỬ LÝ ĐĂNG NHẬP
-        try:
-            self.driver.get("https://www.facebook.com")
-            time.sleep(2)
-
-            # Chỉ nạp cookie khi phiên hiện tại không phải của đúng UID.
-            if not self._session_cookies_ok(uid):
-                print(
-                    f"[{uid}] Chưa có phiên hợp lệ cho UID này. "
-                    f"Nạp cookie từ {cookie_file_path}..."
-                )
-                self._inject_cookies(self.driver, cookie_file_path)
-            else:
-                print(f"[{uid}] Profile đã có phiên đăng nhập đúng UID.")
-
-            # 5. XÁC MINH TRẠNG THÁI ĐĂNG NHẬP (1 lần duy nhất)
-            if not self.is_logged_in(expected_uid=uid):
-                print(f"[{uid}] Đăng nhập thất bại / Checkpoint / Sai tài khoản!")
-                if self.last_start_error is None:
-                    self.last_start_error = "login_failed"
-                self.close()
-                return False
-
-            self._persist_cookies(uid)
-            return True
-
-        except Exception as e:
-            print(f"[{uid}] ❌ Lỗi trong quá trình điều hướng/truy cập: {e}")
-            self._abort_start("browser_navigation_failed")
-            return False
-
-    def _abort_start(self, error: str):
-        """Đặt lỗi rồi dọn sạch driver/profile/lock."""
-        self.last_start_error = error
-        self.close()
-
-    def _inject_cookies(self, driver_instance, file_path) -> bool:
-        """Nạp cookie từ file vào browser đang mở."""
-        if not os.path.exists(file_path):
-            print(f"Không tìm thấy file cookie tại: {file_path}")
-            return False
-
-        try:
-            with open(file_path, "r", encoding="utf-8") as f:
-                cookies = json.load(f)
-
-            driver_instance.get("https://www.facebook.com")
-            time.sleep(1)
-
-            success_count = 0
-            for cookie in cookies:
-                cookie_dict = {
-                    "name": cookie.get("name"),
-                    "value": cookie.get("value"),
-                    "domain": cookie.get("domain", ".facebook.com"),
-                    "path": cookie.get("path", "/"),
-                    "secure": cookie.get("secure", True),
-                }
-
-                expiry = cookie.get("expirationDate", cookie.get("expiry"))
-                if expiry is not None:
-                    try:
-                        cookie_dict["expiry"] = int(float(expiry))
-                    except (ValueError, TypeError):
-                        pass
-
-                try:
-                    driver_instance.add_cookie(cookie_dict)
-                    success_count += 1
-                except Exception as cookie_error:
-                    print(f"[Cookie] Bỏ qua cookie lỗi: {cookie_error}")
-
-            driver_instance.refresh()
-            time.sleep(2)
-            print(f"Đã nạp thành công {success_count}/{len(cookies)} Cookie.")
-            return True
-        except Exception as e:
-            print(f"Lỗi khi đọc/nạp Cookie: {str(e)}")
-            return False
-
-    def _session_cookies_ok(self, uid: str) -> bool:
-        """Kiểm tra nhanh cookie hiện tại có thuộc đúng UID không (không điều hướng)."""
-        try:
-            cookies = {
-                cookie.get("name"): cookie.get("value")
-                for cookie in self.driver.get_cookies()
+        rows.append(
+            {
+                "post_id": str(post.get("post_id") or ""),
+                "author_name": post.get("author_name") or "",
+                "author_url": post.get("author_url") or "",
+                "source_name": post.get("source_name") or "",
+                "content": str(post.get("content") or ""),
+                "media_type": post.get("media_type") or "",
+                "media_count": len(media_urls),
+                "media_urls": " | ".join(media_urls),
+                "reactions": _export_count(post.get("reactions")),
+                "comments": _export_count(post.get("comments")),
+                "shares": _export_count(post.get("shares")),
+                "published_at": post.get("published_at") or "",
+                "permalink": post.get("permalink") or "",
+                "group_id": post.get("group_id") or "",
+                "scope": post.get("scope") or "",
+                "content_truncated": bool(post.get("content_truncated")),
+                "scraped_at": post.get("scraped_at") or "",
             }
-        except Exception:
-            return False
-        return cookies.get("c_user") == str(uid) and bool(cookies.get("xs"))
-
-    def _persist_cookies(self, uid: str):
-        """Ghi cookie từ browser về kho nguồn để lần chạy sau dùng được."""
-        try:
-            cookies = self.driver.get_cookies()
-        except Exception as error:
-            print(f"[{uid}] Không đọc được cookie từ browser: {error}")
-            return
-
-        try:
-            path = get_profile_manager().cookies.save(uid, cookies)
-            print(f"[{uid}] Đã cập nhật cookie nguồn: {path}")
-        except Exception as error:
-            print(f"[{uid}] Không ghi được cookie nguồn: {error}")
+        )
+    return rows
 
 
-    # -------------------------
-    # Module đăng nhập & quản lý Cookie
-    # -------------------------
-    def save_cookies(self):
-        """Ghi cookie hiện tại của browser về kho nguồn."""
-        if not self.driver or not self._session:
-            print("❌ Save cookies failed: browser chưa được khởi tạo")
-            return False
+def export_posts_to_spreadsheet(
+    json_filepath: str,
+    output_dir: str | None = None,
+    output_basename: str | None = None,
+) -> dict:
+    """Xuất file JSON kết quả quét bài ra cả .xlsx và .csv.
 
-        try:
-            path = get_profile_manager().cookies.save(
-                self._session.uid, self.driver.get_cookies()
+    Trả về dict dạng ``{"xlsx": path, "csv": path}``. Nếu một định dạng lỗi,
+    định dạng còn lại vẫn được giữ và hàm vẫn trả về đường dẫn tương ứng.
+    """
+    if not os.path.exists(json_filepath):
+        print(f"⚠️ Không tìm thấy file JSON để xuất: {json_filepath}")
+        return {}
+
+    try:
+        with open(json_filepath, "r", encoding="utf-8") as file:
+            payload = json.load(file)
+    except (OSError, json.JSONDecodeError) as error:
+        print(f"⚠️ Không đọc được file JSON để xuất: {error}")
+        return {}
+
+    if isinstance(payload, dict):
+        posts = payload.get("posts") or []
+    elif isinstance(payload, list):
+        posts = payload
+    else:
+        posts = []
+
+    rows = _post_export_rows(posts)
+    if not rows:
+        print("⚠️ File JSON không có bài viết nào để xuất Excel/CSV.")
+        return {}
+
+    base_name = output_basename or os.path.splitext(
+        os.path.basename(json_filepath)
+    )[0]
+    target_dir = output_dir or os.path.join(APP_DIR, "data", "processed")
+    os.makedirs(target_dir, exist_ok=True)
+
+    csv_path = os.path.join(target_dir, f"{base_name}.csv")
+    xlsx_path = os.path.join(target_dir, f"{base_name}.xlsx")
+    df = pd.DataFrame(rows, columns=list(POST_EXPORT_COLUMNS))
+    exported = {}
+
+    try:
+        df.to_csv(csv_path, index=False, encoding="utf-8-sig", na_rep="")
+        exported["csv"] = csv_path
+    except Exception as error:
+        print(f"⚠️ Không xuất được CSV: {error}")
+
+    try:
+        # Excel giới hạn 32767 ký tự/ô; cắt bớt nếu bài quá dài.
+        excel_df = df.copy()
+        excel_df["content_truncated"] = [
+            bool(flag) or (isinstance(content, str) and len(content) > 32000)
+            for flag, content in zip(
+                excel_df["content_truncated"], excel_df["content"]
             )
-            print(f"🍪 Cookies updated → {path}")
-            return True
-        except Exception as e:
-            print(f"❌ Save cookies failed: {e}")
-            return False
-
-    def is_logged_in(self, expected_uid: str = None):
-        """Xác minh phiên đăng nhập và (tuỳ chọn) đúng tài khoản."""
-        driver = self.driver
-        if driver is None:
-            return False
-
-        try:
-            cookies = {c["name"]: c["value"] for c in driver.get_cookies()}
-        except Exception:
-            return False
-
-        print(f"Cookie hiện có: {sorted(cookies)}")
-
-        # Fast fail
-        if "c_user" not in cookies or "xs" not in cookies:
-            return False
-
-        # Không cho phép chạy nhầm tài khoản khi profile còn session người khác.
-        if expected_uid and str(cookies["c_user"]) != str(expected_uid):
-            self.last_start_error = "account_mismatch"
-            print(
-                f"[Login] Cookie thuộc UID {cookies['c_user']} "
-                f"nhưng cần {expected_uid}."
+        ]
+        for column in excel_df.columns:
+            excel_df[column] = excel_df[column].map(
+                lambda value: (
+                    value[:32000]
+                    if isinstance(value, str) and len(value) > 32000
+                    else value
+                )
             )
-            return False
 
-        # Verify session
-        try:
-            driver.get("https://www.facebook.com/me")
-            WebDriverWait(driver, 10).until(
-                lambda d: d.execute_script("return document.readyState") == "complete"
-            )
-        except Exception as e:
-            print(f"[Login] Không xác minh được phiên: {e}")
-            return False
+        from openpyxl.utils import get_column_letter
 
-        current_url = (driver.current_url or "").lower()
-        if any(
-            marker in current_url
-            for marker in ("/login", "/checkpoint", "/recover", "/two_step_verification")
-        ):
-            print(f"[Login] Bị chuyển hướng xác minh: {current_url}")
-            return False
+        with pd.ExcelWriter(xlsx_path, engine="openpyxl") as writer:
+            excel_df.to_excel(writer, index=False, sheet_name="Posts")
+            worksheet = writer.sheets["Posts"]
+            worksheet.freeze_panes = "A2"
+            for index, column in enumerate(excel_df.columns, start=1):
+                max_length = len(str(column))
+                if len(excel_df):
+                    max_length = max(
+                        max_length,
+                        int(excel_df[column].astype(str).map(len).max()),
+                    )
+                worksheet.column_dimensions[
+                    get_column_letter(index)
+                ].width = min(max_length + 2, 60)
+        exported["xlsx"] = xlsx_path
+    except Exception as error:
+        print(f"⚠️ Không xuất được Excel: {error}")
 
-        return True
-    
-    def login_with_cookies(self, uid: str, cookies: list) -> bool:
-        """Hàm phụ trách mở browser, inject cookies để đăng nhập vào Facebook"""
-        print(f"[UID: {uid}] Đang khởi tạo trình duyệt...")
+    if exported:
+        print(
+            f"📊 Đã xuất {len(df)} bài ra Excel/CSV:\n"
+            + "\n".join(f"   - {path}" for path in exported.values())
+        )
+    return exported
 
-        # 1. Khởi tạo driver và ngắt ngay nếu thất bại
-        try:
-            if not getattr(self, "driver", None):
-                print(f"[UID: {uid}] 🚨 Khởi tạo Driver thất bại (driver is None).")
-                return False
-        except Exception as e:
-            print(f"[UID: {uid}] 🚨 Lỗi setup_driver: {e}")
-            return False
-        
-        try:
-            # 1. Đi tới Facebook trước khi add cookie
-            self.driver.get("https://www.facebook.com")
-            time.sleep(2)        
 
-            allowed = {
-                "name",
-                "value",
-                "domain",
-                "path",
-                "expiry",
-                "secure",
-                "httpOnly"
-            }
+class FacebookBot(
+    BrowserMixin,
+    AuthMixin,
+    GraphQLMixin,
+    CommentMixin,
+    ReactionMixin,
+):
+    """Ghép các nhóm chức năng của bot Facebook."""
 
-            for cookie in cookies:
-                cookie = {k: v for k, v in cookie.items() if k in allowed}
-                try:
-                    print(f"Adding {cookie}")
-                    self.driver.add_cookie(cookie)
-                except:
-                    print(f'Failed: {cookie}')
-            
-            # 3. Refresh để áp dụng Cookie và vào trạng thái Đăng Nhập
-            self.driver.refresh()
-            time.sleep(3)
-
-            print(f"[UID: {uid}] Inject cookie hoàn tất. Tiêu đề trang: {self.driver.title}")
-            
-            success = self.is_logged_in()
-            if success:
-                print("Hoàn tất đăng nhập!")
-            return success
-
-        except Exception as e:
-            print(f"[UID: {uid}] Gặp lỗi trong quá trình inject cookie: {e}")
-            self.close() # Đóng driver ngay nếu lỗi giữa chừng
-            return False
-
-    # -------------------------
-
-    # -------------------------
-    # Scan uid from group members
-    # --
     def log_raw_response(self, res_data: dict, filename: str = None):
         """
         Log request GraphQL (mặc định: logs/<uid>/requests.jsonl).
@@ -664,363 +472,6 @@ class FacebookBot:
 
         with open(filename, "a", encoding="utf-8") as f:
             f.write(json.dumps(res_data, ensure_ascii=False) + "\n")
-    
-    def fetch_group_members(
-        self,
-        group_id: str,
-        cursor: str = None,
-        count: int = 10,
-        doc_id: str = "27114388448203693",
-        friendly_name: str = "GroupsCometMembersPageNewMembersSectionRefetchQuery",
-    ) -> dict:
-        """Thực thi GraphQL request với doc_id và friendly_name linh hoạt (An toàn 100% thread)."""
-        js_script = """
-            const done = arguments[arguments.length - 1];
-            const groupId = arguments[0];
-            const cursor = arguments[1];
-            const count = arguments[2];
-            const docId = arguments[3];
-            const friendlyName = arguments[4];
-
-            try {
-                const controller = new AbortController();
-                const timeoutId = setTimeout(() => {
-                    controller.abort();
-                    done({ error: "JS_FETCH_TIMEOUT" });
-                }, 10000);
-
-                // 1. LẤY CÁC TOKEN BẢO MẬT (DTSG, USER_ID, LSD)
-                let dtsgToken = "", userId = "", lsdToken = "";
-                
-                try { dtsgToken = (window.require && require('DTSGInitialData').token) || ""; } catch(e){}
-                try { userId = (window.require && require('CurrentUserInitialData').USER_ID) || ""; } catch(e){}
-                try { lsdToken = (window.require && require('LSD').token) || ""; } catch(e){}
-
-                // Fallback qua Cookie nếu thiếu
-                if (!dtsgToken) {
-                    const m = document.cookie.match(/fb_dtsg=([^;]+)/);
-                    if (m) dtsgToken = decodeURIComponent(m[1]);
-                }
-                if (!userId) {
-                    const m = document.cookie.match(/c_user=([0-9]+)/);
-                    if (m) userId = m[1];
-                }
-
-                if (!dtsgToken || !userId) {
-                    clearTimeout(timeoutId);
-                    return done({ error: "MISSING_AUTH_TOKENS" });
-                }
-
-                // 2. TÍNH JAZOEST
-                let sum = 0;
-                for (let i = 0; i < dtsgToken.length; i++) sum += dtsgToken.charCodeAt(i);
-                const jazoest = '2' + sum;
-
-                // 3. TỰ ĐỘNG LẤY TELEMETRY TỪ WINDOW (NẾU CÓ) ĐỂ TĂNG CONTENT-LENGTH LÊN 3000+ BYTES
-                let rev = "", spinT = "";
-                try { rev = (window.SiteData && window.SiteData.client_revision) || ""; } catch(e){}
-                try { spinT = (window.Env && window.Env.start_time) || ""; } catch(e){}
-
-                // 4. XÂY DỰNG PAYLOAD HOÀN CHỈNH
-                const payloadMap = {
-                    'av': userId,
-                    '__user': userId,
-                    'fb_dtsg': dtsgToken,
-                    'jazoest': jazoest,
-                    'lsd': lsdToken,
-                    'fb_api_caller_class': 'RelayModern',
-                    'fb_api_req_friendly_name': friendlyName,
-                    'server_timestamps': 'true',
-                    'doc_id': docId,
-                    'variables': JSON.stringify({
-                        'count': count,
-                        'cursor': cursor ? cursor : null,
-                        'groupID': groupId,
-                        'recruitingGroupFilterNonCompliant': false,
-                        'scale': 1,
-                        'id': groupId
-                    }),
-                    '__a': '1',
-                    '__comet_req': '15'
-                };
-
-                if (rev) payloadMap['__rev'] = rev;
-                if (spinT) payloadMap['__spin_t'] = spinT;
-
-                const payload = new URLSearchParams(payloadMap);
-
-                // 5. GỬI FETCH CÓ CHỨA CÁC CUSTOM HEADERS X-
-                fetch('https://www.facebook.com/api/graphql/', {
-                    method: 'POST',
-                    headers: { 
-                        'Content-Type': 'application/x-www-form-urlencoded',
-                        'X-Asbd-Id': '359341',
-                        'X-Fb-Friendly-Name': friendlyName,
-                        'X-Fb-Lsd': lsdToken
-                    },
-                    body: payload.toString(),
-                    credentials: 'include',
-                    signal: controller.signal
-                })
-                .then(async res => {
-                    clearTimeout(timeoutId);
-                    const text = await res.text();
-                    const clean = text.replace(/^\\uFEFF/, '').trim();
-                    try {
-                        done(JSON.parse(clean));
-                    } catch(jsonErr) {
-                        // Một số response bị chia thành nhiều JSON object (NDJSON).
-                        // Ghép riêng edges/page_info để parser vẫn dùng được.
-                        try {
-                            const lines = clean.split(/\\r?\\n/).map(s => s.trim()).filter(Boolean);
-                            if (lines.length > 1) {
-                                const objects = lines.map(line => JSON.parse(line));
-                                const merged = { data: { serpResponse: { results: { edges: [] } } } };
-                                for (const obj of objects) {
-                                    const results = obj && obj.data && obj.data.serpResponse && obj.data.serpResponse.results;
-                                    if (results && Array.isArray(results.edges)) {
-                                        merged.data.serpResponse.results.edges.push(...results.edges);
-                                    }
-                                    if (results && results.page_info) {
-                                        merged.data.serpResponse.results.page_info = results.page_info;
-                                    }
-                                    if (obj && obj.extensions) {
-                                        merged.extensions = obj.extensions;
-                                    }
-                                }
-                                return done(merged);
-                            }
-                        } catch (streamErr) {}
-
-                        done({
-                            error: "INVALID_JSON_RESPONSE",
-                            parse_error: jsonErr.toString(),
-                            raw: clean.substring(0, 2000),
-                            raw_length: clean.length,
-                            content_type: res.headers.get('content-type') || ''
-                        });
-                    }
-                })
-                .catch(err => {
-                    clearTimeout(timeoutId);
-                    if (err.name === 'AbortError') return;
-                    done({ error: err.toString() });
-                });
-
-            } catch(topErr) {
-                done({ error: "CRITICAL_JS_ERROR: " + topErr.toString() });
-            }
-        """
-        return self.driver.execute_async_script(
-            js_script,
-            str(group_id),
-            cursor,
-            count,
-            str(doc_id),
-            str(friendly_name),
-        )
-
-    def fetch_search_posts(
-        self,
-        keyword: str,
-        cursor: str = None,
-        count: int = 10,
-        doc_id: str = "39411546341825607",
-        friendly_name: str = "SearchCometResultsPaginatedResultsQuery",
-    ) -> dict:
-        """Gọi GraphQL Search giống cách ``fetch_group_members`` lấy token live.
-
-        Không hardcode fb_dtsg/lsd/telemetry. Cursor là chuỗi end_cursor lấy từ
-        ``data.serpResponse.results.page_info`` của response trước đó.
-        """
-        variables = {
-            "allow_streaming": False,
-            "args": {
-                "callsite": "COMET_GLOBAL_SEARCH",
-                "config": {
-                    "exact_match": False,
-                    "high_confidence_config": None,
-                    "intercept_config": None,
-                    "sts_disambiguation": None,
-                    "watch_config": None,
-                },
-                "context": {"bsid": str(uuid.uuid4()), "tsid": None},
-                "experience": {
-                    "client_defined_experiences": ["ADS_PARALLEL_FETCH"],
-                    "encoded_server_defined_params": None,
-                    "fbid": None,
-                    "type": "GLOBAL_SEARCH",
-                },
-                "filters": [],
-                "text": str(keyword or ""),
-            },
-            "count": int(count),
-            "cursor": cursor,
-            "feedLocation": "SEARCH",
-            "feedbackSource": 23,
-            "fetch_filters": True,
-            "focusCommentID": None,
-            "locale": None,
-            "privacySelectorRenderLocation": "COMET_STREAM",
-            "referringStoryRenderLocation": None,
-            "renderLocation": "search_results_page",
-            "scale": 1,
-            "stream_initial_count": 0,
-            "useDefaultActor": False,
-            # Các Relay provider variable bắt buộc của persisted query. Thiếu
-            # chúng Facebook trả missing_required_variable_value.
-            "__relay_internal__pv__GHLShouldChangeAdIdFieldNamerelayprovider": True,
-            "__relay_internal__pv__GHLShouldChangeSponsoredDataFieldNamerelayprovider": True,
-            "__relay_internal__pv__CometFeedStory_enable_reactor_facepilerelayprovider": False,
-            "__relay_internal__pv__CometFeedStory_enable_social_bubblesrelayprovider": False,
-            "__relay_internal__pv__CometFeedStory_enable_post_permalink_white_space_clickrelayprovider": False,
-            "__relay_internal__pv__CometUFICommentActionLinksRewriteEnabledrelayprovider": True,
-            "__relay_internal__pv__CometUFICommentAvatarStickerAnimatedImagerelayprovider": False,
-            "__relay_internal__pv__IsWorkUserrelayprovider": False,
-            "__relay_internal__pv__TestPilotShouldIncludeDemoAdUseCaserelayprovider": False,
-            "__relay_internal__pv__FBReels_deprecate_short_form_video_context_gkrelayprovider": True,
-            "__relay_internal__pv__CometUFI_dedicated_comment_routable_dialog_gkrelayprovider": True,
-            "__relay_internal__pv__FBReels_enable_view_dubbed_audio_type_gkrelayprovider": True,
-            "__relay_internal__pv__CometFeedShareMedia_shouldPrefetchShareImagerelayprovider": True,
-            "__relay_internal__pv__CometImmersivePhotoCanUserDisable3DMotionrelayprovider": False,
-            "__relay_internal__pv__WorkCometIsEmployeeGKProviderrelayprovider": False,
-            "__relay_internal__pv__IsMergQAPollsrelayprovider": False,
-            "__relay_internal__pv__FBReelsMediaFooter_comet_enable_reels_ads_gkrelayprovider": True,
-            "__relay_internal__pv__CometUFIReactionsEnableShortNamerelayprovider": False,
-            "__relay_internal__pv__CometUFICommentAutoTranslationTyperelayprovider": "AUTO_TRANSLATE",
-            "__relay_internal__pv__CometUFIShareActionMigrationrelayprovider": True,
-            "__relay_internal__pv__CometUFISingleLineUFIrelayprovider": True,
-            "__relay_internal__pv__relay_provider_comet_ufi_ssr_seo_deferrelayprovider": True,
-            "__relay_internal__pv__FBReelsIFUTileContent_reelsIFUPlayOnHoverrelayprovider": True,
-            "__relay_internal__pv__GroupsCometGYSJFeedItemHeightrelayprovider": 206,
-            "__relay_internal__pv__StoriesShouldEnablePhotosensitiveContentWarningrelayprovider": False,
-            "__relay_internal__pv__ShouldEnableBakedInTextStoriesrelayprovider": False,
-            "__relay_internal__pv__StoriesShouldIncludeFbNotesrelayprovider": True,
-        }
-
-        js_script = """
-            const done = arguments[arguments.length - 1];
-            const variablesJson = arguments[0];
-            const docId = arguments[1];
-            const friendlyName = arguments[2];
-
-            try {
-                const controller = new AbortController();
-                const timeoutId = setTimeout(() => {
-                    controller.abort();
-                    done({ error: "JS_FETCH_TIMEOUT" });
-                }, 15000);
-
-                let dtsgToken = "", userId = "", lsdToken = "";
-                try { dtsgToken = (window.require && require('DTSGInitialData').token) || ""; } catch(e){}
-                try { userId = (window.require && require('CurrentUserInitialData').USER_ID) || ""; } catch(e){}
-                try { lsdToken = (window.require && require('LSD').token) || ""; } catch(e){}
-
-                if (!dtsgToken) {
-                    const m = document.cookie.match(/fb_dtsg=([^;]+)/);
-                    if (m) dtsgToken = decodeURIComponent(m[1]);
-                }
-                if (!userId) {
-                    const m = document.cookie.match(/c_user=([0-9]+)/);
-                    if (m) userId = m[1];
-                }
-                if (!dtsgToken || !userId) {
-                    clearTimeout(timeoutId);
-                    return done({ error: "MISSING_AUTH_TOKENS" });
-                }
-
-                let sum = 0;
-                for (let i = 0; i < dtsgToken.length; i++) sum += dtsgToken.charCodeAt(i);
-                const jazoest = '2' + sum;
-
-                let rev = "", spinT = "";
-                try { rev = (window.SiteData && window.SiteData.client_revision) || ""; } catch(e){}
-                try { spinT = (window.Env && window.Env.start_time) || ""; } catch(e){}
-
-                const payloadMap = {
-                    'av': userId,
-                    '__user': userId,
-                    'fb_dtsg': dtsgToken,
-                    'jazoest': jazoest,
-                    'lsd': lsdToken,
-                    'fb_api_caller_class': 'RelayModern',
-                    'fb_api_req_friendly_name': friendlyName,
-                    'server_timestamps': 'true',
-                    'doc_id': docId,
-                    'variables': variablesJson,
-                    '__a': '1',
-                    '__comet_req': '15'
-                };
-                if (rev) payloadMap['__rev'] = rev;
-                if (spinT) payloadMap['__spin_t'] = spinT;
-
-                const payload = new URLSearchParams(payloadMap);
-                fetch('https://www.facebook.com/api/graphql/', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/x-www-form-urlencoded',
-                        'X-Asbd-Id': '359341',
-                        'X-Fb-Friendly-Name': friendlyName,
-                        'X-Fb-Lsd': lsdToken
-                    },
-                    body: payload.toString(),
-                    credentials: 'include',
-                    signal: controller.signal
-                })
-                .then(async res => {
-                    clearTimeout(timeoutId);
-                    const text = await res.text();
-                    const clean = text.replace(/^\\uFEFF/, '').trim();
-                    try {
-                        done(JSON.parse(clean));
-                    } catch(jsonErr) {
-                        // Một số response bị chia thành nhiều JSON object (NDJSON).
-                        // Ghép riêng edges/page_info để parser vẫn dùng được.
-                        try {
-                            const lines = clean.split(/\\r?\\n/).map(s => s.trim()).filter(Boolean);
-                            if (lines.length > 1) {
-                                const objects = lines.map(line => JSON.parse(line));
-                                const merged = { data: { serpResponse: { results: { edges: [] } } } };
-                                for (const obj of objects) {
-                                    const results = obj && obj.data && obj.data.serpResponse && obj.data.serpResponse.results;
-                                    if (results && Array.isArray(results.edges)) {
-                                        merged.data.serpResponse.results.edges.push(...results.edges);
-                                    }
-                                    if (results && results.page_info) {
-                                        merged.data.serpResponse.results.page_info = results.page_info;
-                                    }
-                                    if (obj && obj.extensions) {
-                                        merged.extensions = obj.extensions;
-                                    }
-                                }
-                                return done(merged);
-                            }
-                        } catch (streamErr) {}
-
-                        done({
-                            error: "INVALID_JSON_RESPONSE",
-                            parse_error: jsonErr.toString(),
-                            raw: clean.substring(0, 2000),
-                            raw_length: clean.length,
-                            content_type: res.headers.get('content-type') || ''
-                        });
-                    }
-                })
-                .catch(err => {
-                    clearTimeout(timeoutId);
-                    if (err.name === 'AbortError') return;
-                    done({ error: err.toString() });
-                });
-            } catch(topErr) {
-                done({ error: "CRITICAL_JS_ERROR: " + topErr.toString() });
-            }
-        """
-        return self.driver.execute_async_script(
-            js_script,
-            json.dumps(variables, ensure_ascii=False),
-            str(doc_id),
-            str(friendly_name),
-        )
 
     def get_numeric_group_id(self, group_input: str = None) -> str:
         """
@@ -1138,12 +589,12 @@ class FacebookBot:
 
         payload = {
             'new_members': {
-                'doc_id': 27114388448203693,
-                'friendly_name': 'GroupsCometMembersPageNewMembersSectionRefetchQuery'
+                'doc_id': GROUP_MEMBERS_DOC_ID,
+                'friendly_name': GROUP_MEMBERS_FRIENDLY_NAME,
             },
             'things_in_common': {
-                'doc_id': 27277860175202851,
-                'friendly_name': 'GroupsCometMembersWithThingsInCommonCardPaginationQuery'
+                'doc_id': THINGS_IN_COMMON_DOC_ID,
+                'friendly_name': THINGS_IN_COMMON_FRIENDLY_NAME,
             }    
         }
         collected_uids = set()
@@ -1314,11 +765,22 @@ class FacebookBot:
         pause_seconds: int = 0,
         max_posts: int = 100,
         expand_content: bool = True,
+        recent_posts: bool = False,
+        time_range: str = "all",
+        post_type: str = "all",
     ) -> dict:
         """Mở feed Facebook, trích xuất bài viết và lưu ra file JSON.
 
-        `scope="search"` quét trang Search bài viết theo từ khóa.
+        `scope="search"` tìm qua thanh search của Facebook, mở tab "Bài viết"
+        rồi trích xuất theo từ khóa.
         `scope="groups"` quét lần lượt các group đã chọn.
+
+        `recent_posts=True` chỉ áp dụng cho scope search: bật filter
+        `recent_posts` trên UI và GraphQL để lấy bài đăng gần đây.
+
+        `time_range` và `post_type` hiện chỉ áp dụng cho scope search:
+        - thời gian: ``24h`` / ``7d`` / ``30d`` / ``all`` (hoặc nhãn UI);
+        - loại bài: ``all`` / ``media`` / ``link`` / ``text`` (hoặc nhãn UI).
 
         Kết quả được ghi vào `data/<uid>/raw/posts_<scope>_<timestamp>.json`.
         `pause_seconds` chỉ dùng khi cần giữ browser mở thêm để phân tích thủ công.
@@ -1333,6 +795,7 @@ class FacebookBot:
             if str(group_id).strip()
         ]
         normalized_keyword = str(keyword or "").strip()
+        recent_posts = bool(recent_posts) and normalized_scope == "search"
         try:
             max_posts = int(max_posts)
         except (TypeError, ValueError):
@@ -1340,17 +803,25 @@ class FacebookBot:
         if max_posts < 0:
             max_posts = 0
 
+        # Bộ lọc thời gian/loại bài chỉ hỗ trợ Search ở giai đoạn này.
+        time_range_hours = (
+            _normalize_time_range(time_range)
+            if normalized_scope == "search"
+            else None
+        )
+        post_type_filter = (
+            _normalize_post_type(post_type)
+            if normalized_scope == "search"
+            else None
+        )
+        scan_now = dt.datetime.now(dt.timezone.utc)
+
         if normalized_scope == "search":
             if not normalized_keyword:
                 raise ValueError("Search tổng quát yêu cầu từ khóa.")
-            targets = [
-                (
-                    "https://www.facebook.com/search/posts/?q="
-                    f"{urllib.parse.quote_plus(normalized_keyword)}",
-                    f"search:{normalized_keyword}",
-                    None,
-                )
-            ]
+            # Không mở thẳng URL /search/posts nữa; dùng thanh search của
+            # Facebook rồi mở tab "Bài viết" để tránh bị chặn/redirect.
+            targets = [(None, f"search:{normalized_keyword}", None)]
             source_label = f"search:{normalized_keyword}"
         elif normalized_scope == "groups":
             if not normalized_groups:
@@ -1376,7 +847,7 @@ class FacebookBot:
         feed_found = False
         browser_closed = False
         extraction_error = None
-        last_url = targets[0][0]
+        last_url = "https://www.facebook.com"
 
         print(
             f"[Post Scan] Bắt đầu trích xuất {source_label} "
@@ -1392,23 +863,62 @@ class FacebookBot:
                 if not self.driver.window_handles:
                     raise WebDriverException("Browser window is closed.")
 
-                last_url = target_url
-                print(f"[Post Scan] Mở {target_label}...")
-                self.driver.get(target_url)
+                if target_url:
+                    last_url = target_url
+                    print(f"[Post Scan] Mở {target_label}...")
+                    self.driver.get(target_url)
+                else:
+                    print(
+                        f"[Post Scan] Tìm '{normalized_keyword}' qua thanh search..."
+                    )
+                    found_search_bar = self._search_via_search_bar(normalized_keyword)
+                    print(found_search_bar)
+                    if not found_search_bar:
+                        extraction_error = (
+                            "Không mở được trang kết quả Search bằng thanh search."
+                        )
+                        print(f"[Post Scan] {extraction_error}")
+                        continue
+                    last_url = self.driver.current_url
 
-                if not self._wait_for_post_feed(timeout=30):
-                    print(f"[Post Scan] Không tìm thấy feed tại {target_label}.")
-                    continue
+                feed_found = False
+                skip_dom_extraction = False
+                skip_dom_reason = ""
 
-                feed_found = True
+                # Filter recent_posts phải được bật trên UI thì feed DOM mới
+                # đổi sang bài mới nhất; GraphQL filter chỉ tác động API.
+                if normalized_scope == "search" and recent_posts:
+                    if not self._ensure_recent_posts_toggle():
+                        skip_dom_extraction = True
+                        skip_dom_reason = (
+                            "không xác nhận được filter 'Bài đăng gần đây' "
+                            "nên chỉ dùng GraphQL để tránh lẫn bài cũ"
+                        )
+                        print(
+                            "[Post Scan] Không xác nhận được filter 'Bài đăng gần đây'; "
+                            "sẽ chỉ dùng GraphQL, bỏ qua DOM."
+                        )
 
-                # Search GraphQL bổ sung timestamp/nội dung đầy đủ; DOM vẫn là fallback.
+                # DOM post_extractor chưa đọc được thời gian đăng, nên khi lọc
+                # thời gian chỉ GraphQL (có published_at) mới đáng tin.
+                if time_range_hours:
+                    skip_dom_extraction = True
+                    skip_dom_reason = (
+                        "bài trong DOM không có published_at để lọc thời gian"
+                    )
+
+                # Search GraphQL bổ sung timestamp/nội dung đầy đủ; ưu tiên
+                # chạy trước để không phụ thuộc việc Facebook có render feed DOM.
                 if normalized_scope == "search":
                     remaining = max_posts - len(collected) if max_posts else 0
                     try:
                         graph_posts = self._collect_search_posts_from_graphql(
                             normalized_keyword,
                             max_posts=remaining,
+                            recent_posts=recent_posts,
+                            post_type=post_type_filter,
+                            time_range_hours=time_range_hours,
+                            now=scan_now,
                         )
                     except Exception as error:
                         print(f"[Post Scan] Bỏ qua GraphQL search: {error}")
@@ -1416,19 +926,42 @@ class FacebookBot:
                     for post in graph_posts:
                         collected.setdefault(post_key(post), post)
 
-                remaining = max_posts - len(collected) if max_posts else 0
-                posts = self._extract_posts_from_current_feed(
-                    scope=normalized_scope,
-                    group_id=group_id,
-                    max_posts=remaining,
-                    expand_content=expand_content,
-                )
-                for post in posts:
-                    collected.setdefault(post_key(post), post)
-                print(
-                    f"[Post Scan] {target_label}: thu được {len(posts)} bài "
-                    f"(tổng {len(collected)})."
-                )
+                if max_posts and len(collected) >= max_posts:
+                    skip_dom_extraction = True
+                    skip_dom_reason = "đã đủ số bài yêu cầu"
+
+                if skip_dom_extraction:
+                    print(f"[Post Scan] Bỏ qua DOM: {skip_dom_reason}.")
+                else:
+                    remaining = max_posts - len(collected) if max_posts else 0
+                    feed_timeout = 10 if normalized_scope == "search" else 30
+                    feed_found = self._wait_for_post_feed(timeout=feed_timeout)
+                    if not feed_found:
+                        print(
+                            f"[Post Scan] Không tìm thấy feed DOM tại "
+                            f"{target_label}."
+                        )
+                        if normalized_scope != "search":
+                            continue
+                        # UI Search mới có thể không có role=feed; GraphQL ở
+                        # trên đã lấy bài nên không cần dừng cả lượt quét.
+                        print(
+                            "[Post Scan] Search đã lấy bài bằng GraphQL, "
+                            "bỏ qua DOM."
+                        )
+                    else:
+                        posts = self._extract_posts_from_current_feed(
+                            scope=normalized_scope,
+                            group_id=group_id,
+                            max_posts=remaining,
+                            expand_content=expand_content,
+                        )
+                        for post in posts:
+                            collected.setdefault(post_key(post), post)
+                        print(
+                            f"[Post Scan] {target_label}: thu được {len(posts)} bài "
+                            f"(tổng {len(collected)})."
+                        )
                 if self.is_stopped():
                     break
 
@@ -1441,10 +974,27 @@ class FacebookBot:
             print(f"[Post Scan] Lỗi khi trích xuất: {error}")
 
         posts = dedupe_posts(collected.values())
+        if post_type_filter is not None or time_range_hours:
+            before_filter = len(posts)
+            posts = [
+                post
+                for post in posts
+                if _post_matches_filters(
+                    post,
+                    post_type=post_type_filter,
+                    time_range_hours=time_range_hours,
+                    now=scan_now,
+                )
+            ]
+            print(
+                f"[Post Scan] Bộ lọc loại bài/thời gian giữ lại "
+                f"{len(posts)}/{before_filter} bài."
+            )
         if max_posts:
             posts = posts[:max_posts]
 
         file_path = None
+        export_paths = {}
         if posts:
             file_path = self._save_posts_json(
                 posts,
@@ -1452,8 +1002,19 @@ class FacebookBot:
                 keyword=normalized_keyword,
                 group_ids=normalized_groups,
                 source_label=source_label,
+                recent_posts=recent_posts,
+                time_range=time_range,
+                post_type=post_type,
             )
             print(f"[Post Scan] Đã lưu {len(posts)} bài vào {file_path}.")
+
+            # Xuất thêm Excel/CSV; lỗi export không được làm hỏng kết quả JSON.
+            try:
+                export_paths = export_posts_to_spreadsheet(
+                    file_path, output_dir=self.exports_dir
+                )
+            except Exception as error:
+                print(f"[Post Scan] Không xuất được Excel/CSV: {error}")
 
         if self.is_stopped():
             status = "stopped"
@@ -1492,7 +1053,13 @@ class FacebookBot:
             "url": last_url,
             "post_count": len(posts),
             "file_path": file_path,
+            "xlsx_path": export_paths.get("xlsx"),
+            "csv_path": export_paths.get("csv"),
+            "export_paths": export_paths,
             "error": extraction_error,
+            "recent_posts": recent_posts,
+            "time_range": time_range,
+            "post_type": post_type,
         }
 
     def _collect_search_posts_from_graphql(
@@ -1500,26 +1067,58 @@ class FacebookBot:
         keyword: str,
         max_posts: int = 0,
         page_size: int = 10,
+        recent_posts: bool = False,
+        post_type: frozenset[str] | None = None,
+        time_range_hours: int | None = None,
+        now: dt.datetime | None = None,
     ) -> list[dict]:
-        """Lấy bài từ response GraphQL Search, có phân trang bằng end_cursor."""
+        """Lấy bài từ response GraphQL Search, có phân trang bằng end_cursor.
+
+        Khi có bộ lọc loại bài/thời gian, hàm tiếp tục phân trang cho tới khi
+        đủ số bài thỏa điều kiện hoặc Facebook hết trang.
+        """
         collected: dict[str, dict] = {}
         cursor = None
         request_index = 0
         limit = max_posts if max_posts and max_posts > 0 else 50
+        filters_active = post_type is not None or bool(time_range_hours)
 
         while not self.is_stopped() and len(collected) < limit:
             request_index += 1
             count = min(page_size, max(1, limit - len(collected)))
-            raw = self.fetch_search_posts(keyword, cursor=cursor, count=count)
+            raw = self.fetch_search_posts(
+                keyword,
+                cursor=cursor,
+                count=count,
+                recent_posts=recent_posts,
+            )
+            output_file = "search_posts_response.json"
+            with open(output_file, "w", encoding="utf-8") as f:
+                json.dump(raw, f, ensure_ascii=False, indent=2)
 
             if not isinstance(raw, dict) or raw.get("error"):
                 error = raw.get("error") if isinstance(raw, dict) else "INVALID_RESPONSE"
                 print(f"[Post Scan] GraphQL search #{request_index} lỗi: {error}")
                 break
 
-            posts = extract_posts_from_graphql_response(raw, scope="search")
+            raw_posts = extract_posts_from_graphql_response(raw, scope="search")
+            page_posts = raw_posts
+            filtered_out = 0
+            if filters_active:
+                page_posts = [
+                    post
+                    for post in raw_posts
+                    if _post_matches_filters(
+                        post,
+                        post_type=post_type,
+                        time_range_hours=time_range_hours,
+                        now=now,
+                    )
+                ]
+                filtered_out = len(raw_posts) - len(page_posts)
+
             new_count = 0
-            for post in posts:
+            for post in page_posts:
                 key = post_key(post)
                 if key in collected:
                     continue
@@ -1528,7 +1127,8 @@ class FacebookBot:
 
             print(
                 f"[Post Scan] GraphQL search #{request_index}: "
-                f"+{new_count} bài (tổng {len(collected)})."
+                f"+{new_count} bài (tổng {len(collected)}"
+                + (f", bỏ {filtered_out} do bộ lọc)." if filtered_out else ").")
             )
 
             page_info = (
@@ -1542,14 +1142,176 @@ class FacebookBot:
                 break
             cursor = next_cursor
 
-            if not posts or not new_count:
-                # Tránh vòng lặp nếu Facebook trả lại cùng cursor/trang.
+            if not raw_posts:
+                break
+            if not new_count and not filtered_out:
+                # Trang chỉ toàn bài trùng -> tránh lặp vô hạn.
                 break
             if len(collected) >= limit:
                 break
             time.sleep(random.uniform(1.0, 2.0))
 
         return list(collected.values())[:limit]
+
+    SEARCH_BAR_SELECTORS = (
+        "input[type='search']",
+        "input[role='combobox'][type='search']",
+        "input[aria-label='Search Facebook']",
+        "input[placeholder='Search Facebook']",
+        "input[aria-label*='Tìm kiếm']",
+        "input[placeholder*='Tìm kiếm']",
+    )
+
+    def _find_search_bar(self, timeout: float = 15):
+        """Tìm ô search trên thanh điều hướng Facebook (Anh/Việt)."""
+
+        def locate(driver):
+            for selector in self.SEARCH_BAR_SELECTORS:
+                for element in driver.find_elements(By.CSS_SELECTOR, selector):
+                    try:
+                        if element.is_displayed() and element.is_enabled():
+                            return element
+                    except Exception:
+                        continue
+            return False
+
+        try:
+            return WebDriverWait(
+                self.driver, timeout, poll_frequency=0.3
+            ).until(locate)
+        except TimeoutException:
+            return None
+
+    def _click_element(self, element) -> bool:
+        """Click thường, fallback JS click nếu bị overlay chặn."""
+        try:
+            element.click()
+            return True
+        except Exception:
+            try:
+                self.driver.execute_script("arguments[0].click();", element)
+                return True
+            except Exception:
+                return False
+
+    def _wait_for_url_contains(self, fragment: str, timeout: float = 20) -> bool:
+        try:
+            WebDriverWait(self.driver, timeout).until(
+                lambda driver: fragment in (driver.current_url or "")
+            )
+            return True
+        except TimeoutException:
+            return False
+
+    def _find_posts_search_tab(self, timeout: float = 20):
+        """Tìm tab 'Bài viết' / 'Posts' trên trang kết quả Search."""
+
+        def locate(driver):
+            for anchor in driver.find_elements(
+                By.CSS_SELECTOR, "a[href*='/search/posts']"
+            ):
+                try:
+                    if anchor.is_displayed():
+                        return anchor
+                except Exception:
+                    continue
+
+            # Fallback theo nhãn nếu Facebook không render href đúng.
+            for element in driver.find_elements(
+                By.CSS_SELECTOR, "[role='link'], [role='tab'], a"
+            ):
+                try:
+                    if not element.is_displayed():
+                        continue
+                    label = _fold_label(
+                        (element.text or "")
+                        + " "
+                        + (element.get_attribute("aria-label") or "")
+                    ).strip()
+                except Exception:
+                    continue
+                if label in {"posts", "bai viet", "bai dang"}:
+                    return element
+            return False
+
+        try:
+            return WebDriverWait(
+                self.driver, timeout, poll_frequency=0.3
+            ).until(locate)
+        except TimeoutException:
+            return None
+
+    def _open_posts_search_tab(self, timeout: float = 20) -> bool:
+        if "/search/posts" in (self.driver.current_url or ""):
+            return True
+
+        # Không chờ quá lâu: UI mới của Facebook không có tab này, cần fallback
+        # sang mục "All" thay vì treo 20-30 giây.
+        tab_timeout = min(timeout, 5)
+        tab = self._find_posts_search_tab(timeout=tab_timeout)
+        if tab is not None:
+            if self._click_element(tab) and self._wait_for_url_contains(
+                "/search/posts", timeout=tab_timeout
+            ):
+                return True
+            print(
+                "[Post Scan] Không chuyển được sang tab 'Bài viết', "
+                "thử dùng trang Search hiện tại."
+            )
+        else:
+            print(
+                "[Post Scan] Không thấy tab 'Bài viết'; "
+                "Facebook có thể đang gộp bài vào mục 'All'."
+            )
+
+        # UI mới của Facebook (ảnh: sidebar Filters/All) không còn tab
+        # "Bài viết" riêng. Khi đang ở trang Search, dùng luôn trang hiện tại
+        # và để GraphQL lọc bài viết thay vì báo lỗi rồi dừng.
+        if "/search" in (self.driver.current_url or ""):
+            print(
+                "[Post Scan] Tiếp tục với trang kết quả Search hiện tại (All)."
+            )
+            return True
+
+        print("[Post Scan] Không tìm thấy trang kết quả Search phù hợp.")
+        return False
+
+    def _search_via_search_bar(self, keyword: str, timeout: float = 30) -> bool:
+        """Tìm bằng thanh search của Facebook rồi mở tab Bài viết.
+
+        Không dùng ``driver.get`` tới URL ``/search/posts`` để tránh bị
+        Facebook redirect/checkpoint và để giữ đúng luồng điều hướng UI.
+        """
+        search_bar = self._find_search_bar(timeout=min(15, timeout))
+        if search_bar is None:
+            print("[Post Scan] Không tìm thấy thanh search của Facebook.")
+            return False
+
+        if not self._click_element(search_bar):
+            print("[Post Scan] Không click được thanh search.")
+            return False
+
+        try:
+            # JS click có thể không focus; focus lại trước khi gõ.
+            self.driver.execute_script("arguments[0].focus();", search_bar)
+        except Exception:
+            pass
+
+        try:
+            search_bar.send_keys(Keys.CONTROL, "a")
+            search_bar.send_keys(Keys.BACKSPACE)
+            search_bar.send_keys(keyword)
+            time.sleep(random.uniform(0.3, 0.7))
+            search_bar.send_keys(Keys.ENTER)
+        except Exception as error:
+            print(f"[Post Scan] Không nhập được từ khóa vào thanh search: {error}")
+            return False
+
+        if not self._wait_for_url_contains("/search", timeout=timeout):
+            print("[Post Scan] Thanh search không mở được trang kết quả.")
+            return False
+
+        return self._open_posts_search_tab(timeout=timeout)
 
     def _wait_for_post_feed(self, timeout: float = 30) -> bool:
         """Chờ tới khi feed Facebook xuất hiện trong DOM."""
@@ -1562,6 +1324,92 @@ class FacebookBot:
             return True
         except Exception:
             return False
+
+    def _find_recent_posts_toggle(self, timeout: float = 10):
+        """Tìm switch 'Recent posts' / 'Bài đăng gần đây' đang render."""
+
+        def locate(driver):
+            for element in driver.find_elements(By.CSS_SELECTOR, "[role='switch']"):
+                labels = []
+                try:
+                    labels.append(element.get_attribute("aria-label") or "")
+                except Exception:
+                    pass
+                try:
+                    labels.append(getattr(element, "text", "") or "")
+                except Exception:
+                    pass
+                # UI mới đặt nhãn "Recent posts" cạnh switch, không phải lúc
+                # nào cũng nằm trong aria-label của chính switch.
+                if not any(is_recent_posts_label(label) for label in labels):
+                    try:
+                        parent = element.find_element(By.XPATH, "..")
+                        labels.append(parent.text or "")
+                    except Exception:
+                        pass
+                if any(is_recent_posts_label(label) for label in labels):
+                    return element
+            return False
+
+        try:
+            return WebDriverWait(
+                self.driver, timeout, poll_frequency=0.3
+            ).until(locate)
+        except TimeoutException:
+            return None
+
+    @staticmethod
+    def _is_toggle_on(element) -> bool:
+        """Đọc trạng thái aria-checked của switch."""
+        try:
+            return (element.get_attribute("aria-checked") or "").lower() == "true"
+        except Exception:
+            return False
+
+    def _ensure_recent_posts_toggle(self, timeout: float = 10) -> bool:
+        """Bật switch 'Bài đăng gần đây' trên UI Facebook.
+
+        Facebook đổi aria-label theo ngôn ngữ tài khoản, nên hàm nhận cả
+        "Recent posts", "Bài đăng gần đây" và "Bài viết gần đây". Trả về True
+        khi switch đang ở trạng thái bật.
+        """
+        element = self._find_recent_posts_toggle(timeout=timeout)
+        if element is None:
+            print(
+                "[Post Scan] Không tìm thấy nút 'Bài đăng gần đây' trên Facebook."
+            )
+            return False
+
+        if self._is_toggle_on(element):
+            print("[Post Scan] 'Bài đăng gần đây' đã bật sẵn.")
+            return True
+
+        try:
+            element.click()
+        except Exception:
+            try:
+                # Một số lớp overlay chặn click chuột; JS click vẫn kích hoạt React.
+                self.driver.execute_script("arguments[0].click();", element)
+            except Exception as error:
+                print(
+                    f"[Post Scan] Không click được nút 'Bài đăng gần đây': {error}"
+                )
+                return False
+
+        # React có thể render lại switch sau khi click -> tìm lại element mới.
+        deadline = time.monotonic() + max(2.0, timeout / 2)
+        while time.monotonic() < deadline:
+            current = self._find_recent_posts_toggle(timeout=0.5)
+            if current is not None and self._is_toggle_on(current):
+                print("[Post Scan] Đã bật 'Bài đăng gần đây'.")
+                time.sleep(RECENT_POSTS_SETTLE_SECONDS)
+                return True
+            time.sleep(0.2)
+
+        print(
+            "[Post Scan] Đã click nhưng nút 'Bài đăng gần đây' chưa chuyển sang bật."
+        )
+        return False
 
     def _collect_post_wrappers(self):
         """Lấy outerHTML của từng wrapper bài viết đang render trong feed."""
@@ -1691,6 +1539,9 @@ class FacebookBot:
         keyword: str,
         group_ids: list[str],
         source_label: str,
+        recent_posts: bool = False,
+        time_range: str = "all",
+        post_type: str = "all",
     ) -> str:
         """Ghi kết quả trích xuất ra data/<uid>/raw/posts_*.json."""
         exported_at = time.strftime("%Y-%m-%dT%H:%M:%S")
@@ -1718,47 +1569,15 @@ class FacebookBot:
             "group_ids": list(group_ids),
             "source": source_label,
             "exported_at": exported_at,
+            "recent_posts": bool(recent_posts) and scope == "search",
+            "time_range": time_range if scope == "search" else "all",
+            "post_type": post_type if scope == "search" else "all",
             "post_count": len(posts),
             "posts": posts,
         }
         with open(file_path, "w", encoding="utf-8") as file:
             json.dump(payload, file, ensure_ascii=False, indent=2)
         return file_path
-
-    # -------------------------
-
-    def close(self):
-        """Đóng browser, chờ Chrome thoát hẳn rồi mới nhả profile.
-
-        Thứ tự quan trọng: nếu nhả lock trước khi chrome.exe chết, task kế tiếp
-        sẽ mở lại đúng profile đó và gặp lỗi DevToolsActivePort.
-        """
-        session = self._session
-        profile_path = self._profile_path
-
-        try:
-            if self.driver:
-                try:
-                    self.driver.quit()
-                except Exception as error:
-                    print(f"[Close] driver.quit lỗi: {error}")
-                self.driver = None
-
-            if profile_path and os.path.isdir(profile_path):
-                wait_for_profile_release(profile_path, timeout=6)
-        finally:
-            if session is not None:
-                dispose_session(session)
-            self._session = None
-            self._profile_path = None
-            self._release_uid_mutex()
-            self._release_profile_lock()
-
-    def _release_uid_mutex(self):
-        mutex = self._uid_mutex
-        self._uid_mutex = None
-        if mutex is not None:
-            mutex.release()
 
     def type_content_to_editor(self, editor, content):
         def insert_to_editor(editor, text):
@@ -2077,7 +1896,7 @@ class FacebookBot:
 
         print(f"🎉 Đã lọc và trích xuất thành công {len(joined_groups)} nhóm đã tham gia.")
         return joined_groups
-    
+
     def share_post_to_group(self, post_url, content : str, uid=""):
         time.sleep(2)
         self.driver.get(post_url)
@@ -2276,4 +2095,3 @@ class FacebookBot:
         
         print("Hoàn tất đăng bài")
         return True
-

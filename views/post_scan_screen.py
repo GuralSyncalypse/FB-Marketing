@@ -28,6 +28,7 @@ class PostScanScreen(ctk.CTkFrame):
         self.scan_results = []
         self.scope_var = tk.StringVar(value="search")
         self.max_posts_var = tk.IntVar(value=100)
+        self.var_recent_posts = tk.BooleanVar(value=False)
         self.stop_event = threading.Event()
         self.current_bot = None
         apply_theme()
@@ -98,6 +99,19 @@ class PostScanScreen(ctk.CTkFrame):
             font=ctk.CTkFont(size=11, slant="italic"),
         ).grid(row=2, column=0, sticky="w", pady=(4, 0))
 
+        self.chk_recent_posts = ctk.CTkCheckBox(
+            search_box.body,
+            text="Bài đăng gần đây",
+            variable=self.var_recent_posts,
+        )
+        self.chk_recent_posts.grid(row=3, column=0, sticky="w", pady=(8, 0))
+        ctk.CTkLabel(
+            search_box.body,
+            text="Lọc recent_posts: ưu tiên bài mới nhất.",
+            text_color=TEXT_MUTED,
+            font=ctk.CTkFont(size=11, slant="italic"),
+        ).grid(row=4, column=0, sticky="w", pady=(2, 0))
+
         self.group_box = TitledFrame(config_scroll, title=" Phạm vi Group ")
         self.group_box.pack(fill="x", pady=(0, 10))
         self.lbl_group_source = ctk.CTkLabel(
@@ -125,7 +139,9 @@ class PostScanScreen(ctk.CTkFrame):
             width=10,
         ).grid(row=0, column=1, sticky="w", padx=(8, 0), pady=3)
 
-        ctk.CTkLabel(filter_box.body, text="Khoảng thời gian:").grid(row=1, column=0, sticky="w", pady=3)
+        ctk.CTkLabel(filter_box.body, text="Khoảng thời gian:").grid(
+            row=1, column=0, sticky="w", pady=3
+        )
         self.cbo_time_range = ctk.CTkComboBox(
             filter_box.body,
             values=("24 giờ gần đây", "7 ngày gần đây", "30 ngày gần đây", "Không giới hạn"),
@@ -134,7 +150,9 @@ class PostScanScreen(ctk.CTkFrame):
         self.cbo_time_range.set("7 ngày gần đây")
         self.cbo_time_range.grid(row=1, column=1, sticky="ew", padx=(8, 0), pady=3)
 
-        ctk.CTkLabel(filter_box.body, text="Loại bài:").grid(row=2, column=0, sticky="w", pady=3)
+        ctk.CTkLabel(filter_box.body, text="Loại bài:").grid(
+            row=2, column=0, sticky="w", pady=3
+        )
         self.cbo_post_type = ctk.CTkComboBox(
             filter_box.body,
             values=("Tất cả", "Bài có ảnh/video", "Bài có link", "Bài văn bản"),
@@ -143,14 +161,48 @@ class PostScanScreen(ctk.CTkFrame):
         self.cbo_post_type.set("Tất cả")
         self.cbo_post_type.grid(row=2, column=1, sticky="ew", padx=(8, 0), pady=3)
 
-        output_box = TitledFrame(config_scroll, title=" Dữ liệu dự kiến lưu ")
-        output_box.pack(fill="x", pady=(0, 10))
+        self.lbl_filter_help = ctk.CTkLabel(
+            filter_box.body,
+            text="Chỉ áp dụng cho Search. Thời gian lọc theo ngày đăng từ GraphQL.",
+            text_color=TEXT_MUTED,
+            font=ctk.CTkFont(size=11, slant="italic"),
+            wraplength=290,
+            justify="left",
+            anchor="w",
+        )
+        self.lbl_filter_help.grid(
+            row=3, column=0, columnspan=2, sticky="w", pady=(4, 0)
+        )
+
+        # Các tùy chọn chưa được nối vào backend -> gom riêng để không gây
+        # hiểu nhầm là đang có hiệu lực.
+        unavailable_box = TitledFrame(config_scroll, title=" Chưa có ")
+        unavailable_box.pack(fill="x", pady=(0, 10))
+
+        ctk.CTkLabel(
+            unavailable_box.body,
+            text="Tùy chọn dữ liệu lưu dưới đây chưa được hỗ trợ, hiện không có tác dụng.",
+            text_color=WARNING_COLOR,
+            font=ctk.CTkFont(size=11, slant="italic"),
+            wraplength=290,
+            justify="left",
+            anchor="w",
+        ).pack(anchor="w", pady=(0, 6))
+
         self.var_content = tk.BooleanVar(value=True)
         self.var_author = tk.BooleanVar(value=True)
-        self.var_metrics = tk.BooleanVar(value=False)
-        ctk.CTkCheckBox(output_box.body, text="Nội dung và link bài", variable=self.var_content).pack(anchor="w")
-        ctk.CTkCheckBox(output_box.body, text="Tác giả và thời gian đăng", variable=self.var_author).pack(anchor="w")
-        ctk.CTkCheckBox(output_box.body, text="Reaction và bình luận", variable=self.var_metrics).pack(anchor="w")
+        ctk.CTkCheckBox(
+            unavailable_box.body,
+            text="Nội dung và link bài",
+            variable=self.var_content,
+            state="disabled",
+        ).pack(anchor="w")
+        ctk.CTkCheckBox(
+            unavailable_box.body,
+            text="Tác giả và thời gian đăng",
+            variable=self.var_author,
+            state="disabled",
+        ).pack(anchor="w")
 
         footer_frame = ctk.CTkFrame(left_container, fg_color="transparent")
         footer_frame.grid(row=1, column=0, sticky="ew", padx=12, pady=(8, 0))
@@ -223,8 +275,8 @@ class PostScanScreen(ctk.CTkFrame):
         ctk.CTkLabel(
             right_frame.body,
             text=(
-                "Kết quả trích xuất được lưu ra file JSON trong thư mục "
-                "data/<uid>/raw; giao diện chưa hiển thị danh sách bài."
+                "Kết quả được lưu JSON trong data/<uid>/raw; "
+                "Excel và CSV trong data/<uid>/exports."
             ),
             text_color=TEXT_MUTED,
             font=ctk.CTkFont(size=11, slant="italic"),
@@ -244,6 +296,20 @@ class PostScanScreen(ctk.CTkFrame):
     def _update_scope_ui(self):
         is_search_scope = self.scope_var.get() == "search"
         self.ent_keyword.configure(state="normal" if is_search_scope else "disabled")
+        self.chk_recent_posts.configure(
+            state="normal" if is_search_scope else "disabled"
+        )
+        # Bộ lọc thời gian/loại bài mới chỉ hỗ trợ Search.
+        filter_state = "readonly" if is_search_scope else "disabled"
+        self.cbo_time_range.configure(state=filter_state)
+        self.cbo_post_type.configure(state=filter_state)
+        self.lbl_filter_help.configure(
+            text=(
+                "Chỉ áp dụng cho Search. Thời gian lọc theo ngày đăng từ GraphQL."
+                if is_search_scope
+                else "Bộ lọc thời gian/loại bài chưa hỗ trợ cho Group."
+            )
+        )
         self.lbl_scope_help.configure(
             text=(
                 "Search là phạm vi rộng nhất; quét bài theo từ khóa trên Facebook."
@@ -293,11 +359,22 @@ class PostScanScreen(ctk.CTkFrame):
             text="Trạng thái: Cấu hình hợp lệ. Sẵn sàng mở Facebook để phân tích.",
             text_color=SUCCESS_COLOR,
         )
+        # Khoảng thời gian, loại bài chỉ hỗ trợ Search. Tùy chọn dữ liệu lưu
+        # vẫn chưa được hỗ trợ và nằm trong khung "Chưa có".
+        time_range = (
+            self.cbo_time_range.get() if scope == "search" else "all"
+        )
+        post_type = (
+            self.cbo_post_type.get() if scope == "search" else "all"
+        )
         return {
             "scope": scope,
             "keyword": keyword,
             "group_ids": [group.get("id", "") for group in selected_groups],
             "max_posts": max_posts,
+            "recent_posts": bool(self.var_recent_posts.get()) if scope == "search" else False,
+            "time_range": time_range,
+            "post_type": post_type,
         }
 
     def start_post_scan(self):
@@ -356,25 +433,43 @@ class PostScanScreen(ctk.CTkFrame):
                 group_ids=config["group_ids"],
                 pause_seconds=0,
                 max_posts=config["max_posts"],
+                recent_posts=config.get("recent_posts", False),
+                time_range=config.get("time_range", "all"),
+                post_type=config.get("post_type", "all"),
             )
             status = result.get("status", "completed")
             post_count = result.get("post_count", 0)
+
+            output_parts = []
+            xlsx_path = result.get("xlsx_path")
+            csv_path = result.get("csv_path")
             file_path = result.get("file_path")
+            if xlsx_path:
+                output_parts.append(f"Excel: {xlsx_path}")
+            if csv_path:
+                output_parts.append(f"CSV: {csv_path}")
+            if file_path:
+                output_parts.append(f"JSON: {file_path}")
+            output_text = (
+                "\n" + "\n".join(output_parts) if output_parts else ""
+            )
+
             if status == "completed":
                 message = (
-                    f"Trạng thái: Đã trích xuất {post_count} bài. "
-                    f"File: {file_path}"
+                    f"Trạng thái: Đã trích xuất {post_count} bài."
+                    f"{output_text}"
                 )
                 text_color = SUCCESS_COLOR
             elif status == "stopped":
                 message = (
-                    f"Trạng thái: Đã dừng. Đã lưu {post_count} bài"
-                    + (f": {file_path}" if file_path else ".")
+                    f"Trạng thái: Đã dừng. Đã lưu {post_count} bài."
+                    f"{output_text}"
                 )
                 text_color = ERROR_COLOR
             elif status == "browser_closed":
                 message = (
-                    f"Trạng thái: Browser đã được đóng thủ công. Đã lưu {post_count} bài."
+                    f"Trạng thái: Browser đã được đóng thủ công. "
+                    f"Đã lưu {post_count} bài.{output_text}"
                 )
                 text_color = ERROR_COLOR
             elif status == "feed_not_found":
@@ -385,6 +480,7 @@ class PostScanScreen(ctk.CTkFrame):
                     "Trạng thái: Lỗi khi trích xuất"
                     + (f" ({result.get('error')})" if result.get("error") else ".")
                     + (f" Đã lưu {post_count} bài." if post_count else "")
+                    + output_text
                 )
                 text_color = ERROR_COLOR
             else:
