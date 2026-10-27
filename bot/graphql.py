@@ -26,6 +26,8 @@ THINGS_IN_COMMON_FRIENDLY_NAME = (
 )
 SEARCH_POSTS_DOC_ID = "39411546341825607"
 SEARCH_POSTS_FRIENDLY_NAME = "SearchCometResultsPaginatedResultsQuery"
+GROUP_POSTS_DOC_ID = "28356402754042733"
+GROUP_POSTS_FRIENDLY_NAME = "GroupsCometFeedRegularStoriesPaginationQuery"
 COMMENTS_DOC_ID = "29265821953021786"
 COMMENTS_FRIENDLY_NAME = "CommentsListComponentsPaginationQuery"
 REPLIES_DOC_ID = "29170168959337360"
@@ -317,6 +319,242 @@ class GraphQLMixin:
             str(group_id),
             cursor,
             count,
+            str(doc_id),
+            str(friendly_name),
+        )
+
+    def fetch_group_feed_posts(
+        self,
+        group_id: str,
+        cursor: str = None,
+        count: int = 3,
+        doc_id: str = GROUP_POSTS_DOC_ID,
+        friendly_name: str = GROUP_POSTS_FRIENDLY_NAME,
+        sorting_setting: str = "TOP_POSTS",
+        feed_type: str = "DISCUSSION",
+        youth_integrity_host_id: str | None = None,
+    ) -> dict:
+        """Gọi GraphQL feed bài viết trong group (Comet)."""
+        if youth_integrity_host_id is None:
+            youth_integrity_host_id = str(group_id)
+        variables = {
+            "count": int(count),
+            "cursor": cursor,
+            "feedLocation": "GROUP",
+            "feedType": feed_type,
+            "feedbackSource": 0,
+            "filterTopicId": None,
+            "focusCommentID": None,
+            "privacySelectorRenderLocation": "COMET_STREAM",
+            "referringStoryRenderLocation": None,
+            "renderLocation": "group",
+            "scale": 1,
+            "sortingSetting": sorting_setting,
+            "stream_initial_count": 1,
+            "useDefaultActor": False,
+            "youthIntegrityHostID": youth_integrity_host_id,
+            "id": str(group_id),
+            "__relay_internal__pv__GHLShouldChangeAdIdFieldNamerelayprovider": True,
+            "__relay_internal__pv__GHLShouldChangeSponsoredDataFieldNamerelayprovider": True,
+            "__relay_internal__pv__CometFeedStory_enable_reactor_facepilerelayprovider": False,
+            "__relay_internal__pv__CometFeedStory_enable_social_bubblesrelayprovider": False,
+            "__relay_internal__pv__CometFeedStory_enable_post_permalink_white_space_clickrelayprovider": False,
+            "__relay_internal__pv__CometUFICommentActionLinksRewriteEnabledrelayprovider": True,
+            "__relay_internal__pv__CometUFICommentAvatarStickerAnimatedImagerelayprovider": False,
+            "__relay_internal__pv__IsWorkUserrelayprovider": False,
+            "__relay_internal__pv__TestPilotShouldIncludeDemoAdUseCaserelayprovider": False,
+            "__relay_internal__pv__FBReels_deprecate_short_form_video_context_gkrelayprovider": True,
+            "__relay_internal__pv__CometUFI_dedicated_comment_routable_dialog_gkrelayprovider": True,
+            "__relay_internal__pv__FBReels_enable_view_dubbed_audio_type_gkrelayprovider": True,
+            "__relay_internal__pv__CometFeedShareMedia_shouldPrefetchShareImagerelayprovider": True,
+            "__relay_internal__pv__CometFeedStory_should_use_action_link_story_cardrelayprovider": False,
+            "__relay_internal__pv__CometGroupFeed_should_show_unseen_posts_bannerrelayprovider": True,
+            "__relay_internal__pv__CometMediaViewerShareActionMigrationrelayprovider": True,
+            "__relay_internal__pv__CometUFIShareActionMigrationrelayprovider": True,
+            "__relay_internal__pv__CometUFIReactionsEnableShortNamerelayprovider": False,
+            "__relay_internal__pv__CometUFISingleLineUFIrelayprovider": True,
+            "__relay_internal__pv__StoriesShouldEnablePhotosensitiveContentWarningrelayprovider": False,
+            "__relay_internal__pv__FBReelsIFUTileContent_reelsIFUPlayOnHoverrelayprovider": True,
+            "__relay_internal__pv__CometImmersivePhotoCanUserDisable3DMotionrelayprovider": False,
+            "__relay_internal__pv__GroupsCometGYSJFeedItemHeightrelayprovider": 206,
+        }
+
+        js_script = """
+            const done = arguments[arguments.length - 1];
+            const variablesJson = arguments[0];
+            const docId = arguments[1];
+            const friendlyName = arguments[2];
+
+            try {
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => {
+                    controller.abort();
+                    done({ error: "JS_FETCH_TIMEOUT" });
+                }, 15000);
+
+                let dtsgToken = "", userId = "", lsdToken = "";
+                try { dtsgToken = (window.require && require('DTSGInitialData').token) || ""; } catch(e){}
+                try { userId = (window.require && require('CurrentUserInitialData').USER_ID) || ""; } catch(e){}
+                try { lsdToken = (window.require && require('LSD').token) || ""; } catch(e){}
+
+                if (!dtsgToken) {
+                    const m = document.cookie.match(/fb_dtsg=([^;]+)/);
+                    if (m) dtsgToken = decodeURIComponent(m[1]);
+                }
+                if (!userId) {
+                    const m = document.cookie.match(/c_user=([0-9]+)/);
+                    if (m) userId = m[1];
+                }
+                if (!dtsgToken || !userId) {
+                    clearTimeout(timeoutId);
+                    return done({ error: "MISSING_AUTH_TOKENS" });
+                }
+
+                let sum = 0;
+                for (let i = 0; i < dtsgToken.length; i++) sum += dtsgToken.charCodeAt(i);
+                const jazoest = '2' + sum;
+
+                let rev = "", spinT = "";
+                try { rev = (window.SiteData && window.SiteData.client_revision) || ""; } catch(e){}
+                try { spinT = (window.Env && window.Env.start_time) || ""; } catch(e){}
+
+                const payloadMap = {
+                    'av': userId,
+                    '__user': userId,
+                    'fb_dtsg': dtsgToken,
+                    'jazoest': jazoest,
+                    'lsd': lsdToken,
+                    'fb_api_caller_class': 'RelayModern',
+                    'fb_api_req_friendly_name': friendlyName,
+                    'server_timestamps': 'true',
+                    'doc_id': docId,
+                    'variables': variablesJson,
+                    '__a': '1',
+                    '__comet_req': '15',
+                    '__crn': 'comet.fbweb.CometGroupDiscussionRoute'
+                };
+                if (rev) payloadMap['__rev'] = rev;
+                if (spinT) payloadMap['__spin_t'] = spinT;
+
+                const payload = new URLSearchParams(payloadMap);
+                fetch('https://www.facebook.com/api/graphql/', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                        'X-Asbd-Id': '359341',
+                        'X-Fb-Friendly-Name': friendlyName,
+                        'X-Fb-Lsd': lsdToken
+                    },
+                    body: payload.toString(),
+                    credentials: 'include',
+                    signal: controller.signal
+                })
+                .then(async res => {
+                    clearTimeout(timeoutId);
+                    const text = await res.text();
+                    const clean = text.replace(/^\\uFEFF/, '').trim();
+                    try {
+                        done(JSON.parse(clean));
+                    } catch(jsonErr) {
+                        try {
+                            const lines = clean.split(/\\r?\\n/).map(s => s.trim()).filter(Boolean);
+                            if (lines.length > 1) {
+                                const objects = lines.map(line => JSON.parse(line));
+                                const merged = { data: { node: { __typename: "Group", group_feed: { edges: [], page_info: {} } } } };
+                                let foundAny = false;
+                                for (const obj of objects) {
+                                    if (!obj || typeof obj !== 'object') continue;
+                                    if (obj.extensions && !merged.extensions) {
+                                        merged.extensions = obj.extensions;
+                                    } else if (obj.extensions && merged.extensions) {
+                                        if (obj.extensions.ndjson_objects) merged.extensions.ndjson_objects = obj.extensions.ndjson_objects;
+                                        if (obj.extensions.is_final !== undefined) merged.extensions.is_final = obj.extensions.is_final;
+                                    }
+
+                                    // Check for page_info in defer labeled chunks
+                                    if (obj.label && typeof obj.label === 'string' && obj.label.includes('page_info')) {
+                                        const pi = obj.data && obj.data.page_info;
+                                        if (pi) {
+                                            foundAny = true;
+                                            merged.data.node.group_feed.page_info = pi;
+                                        }
+                                    }
+
+                                    const gf1 = obj && obj.data && obj.data.node && obj.data.node.group_feed;
+                                    if (gf1 && Array.isArray(gf1.edges)) {
+                                        foundAny = true;
+                                        for (const e of gf1.edges) {
+                                            const n = e && e.node;
+                                            if (!n || typeof n !== 'object') continue;
+                                            const t = n.__typename || '';
+                                            if (t === 'GroupsSectionHeaderUnit' || t === 'GroupsFeedUnitHeader' || t === 'GroupsCometFeedUnitHeader' || t === 'GroupsSectionHeader') {
+                                                continue;
+                                            }
+                                            if (t && t !== 'Story') {
+                                                continue;
+                                            }
+                                            merged.data.node.group_feed.edges.push(e);
+                                        }
+                                        if (gf1.page_info) {
+                                            merged.data.node.group_feed.page_info = gf1.page_info;
+                                        }
+                                    }
+
+                                    // Labeled stream chunks with Story nodes directly
+                                    if (obj.label && typeof obj.label === 'string' && obj.label.includes('GroupsCometFeedRegularStories')) {
+                                        const nd = obj.data && obj.data.node;
+                                        if (nd && typeof nd === 'object') {
+                                            const t = nd.__typename || '';
+                                            if (t === 'GroupsSectionHeaderUnit' || t === 'GroupsFeedUnitHeader' || t === 'GroupsCometFeedUnitHeader' || t === 'GroupsSectionHeader') {
+                                                continue;
+                                            }
+                                            if (t === 'Story') {
+                                                foundAny = true;
+                                                merged.data.node.group_feed.edges.push({ node: nd, cursor: obj.data.cursor || obj.cursor || undefined });
+                                            }
+                                        }
+                                        // Also check if cursor is at data level
+                                        if (obj.data && obj.data.cursor && merged.data.node.group_feed.page_info) {
+                                            if (!merged.data.node.group_feed.page_info.end_cursor && obj.data.cursor) {
+                                                // some cases, but page_info comes from defer
+                                            }
+                                        }
+                                    }
+                                }
+                                if (!merged.extensions) merged.extensions = {};
+                                merged.extensions.ndjson_objects = objects.length;
+                                if (foundAny) {
+                                    return done(merged);
+                                }
+                                const withData = objects.find(obj => obj && obj.data);
+                                if (withData) {
+                                    if (!withData.extensions) withData.extensions = {};
+                                    withData.extensions.ndjson_objects = objects.length;
+                                    return done(withData);
+                                }
+                            }
+                        } catch (streamErr) {}
+                        done({
+                            error: "INVALID_JSON_RESPONSE",
+                            parse_error: jsonErr.toString(),
+                            raw: clean.substring(0, 2000),
+                            raw_length: clean.length,
+                            content_type: res.headers.get('content-type') || ''
+                        });
+                    }
+                })
+                .catch(err => {
+                    clearTimeout(timeoutId);
+                    if (err.name === 'AbortError') return;
+                    done({ error: err.toString() });
+                });
+            } catch(topErr) {
+                done({ error: "CRITICAL_JS_ERROR: " + topErr.toString() });
+            }
+        """
+        return self.driver.execute_async_script(
+            js_script,
+            json.dumps(variables, ensure_ascii=False),
             str(doc_id),
             str(friendly_name),
         )

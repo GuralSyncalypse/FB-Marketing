@@ -74,7 +74,7 @@ def _first_message_text(story: dict) -> str | None:
     return None
 
 
-def _first_dict_with_count(story: dict, key: str) -> int | None:
+def _first_dict_with_count(story: dict, key: str) -> dict | None:
     for node in _iter_dicts(story):
         value = node.get(key)
         if isinstance(value, dict):
@@ -82,26 +82,55 @@ def _first_dict_with_count(story: dict, key: str) -> int | None:
             if isinstance(count, bool):
                 continue
             if isinstance(count, (int, float)):
-                return int(count)
-            if isinstance(count, str) and count.strip().isdigit():
-                return int(count.strip())
+                return {"count": int(count)}
+            if isinstance(count, str) and count.strip().lstrip('-').isdigit():
+                return {"count": int(count.strip())}
+            i18n = value.get("i18n_count") or value.get("i18n_share_count") or value.get("i18n_reaction_count")
+            if i18n:
+                return {"count": None, "i18n_count": i18n}
+    # also try direct paths
+    for path in (
+        ("feedback", "reaction_count"),
+        ("feedback", "comment_count"),
+        ("feedback", "share_count"),
+        ("comet_sections", "feedback", "story", "feedback", "reaction_count"),
+        ("comet_sections", "feedback", "story", "feedback", "share_count"),
+    ):
+        v = _get_path(story, path)
+        if isinstance(v, dict):
+            count = v.get("count")
+            if isinstance(count, (int, float)) and not isinstance(count, bool):
+                return {"count": int(count)}
     return None
 
 
-def _comment_count(story: dict) -> int | None:
+def _comment_count(story: dict) -> dict | None:
     for node in _iter_dicts(story):
         instance = node.get("comment_rendering_instance")
         if isinstance(instance, dict):
             comments = instance.get("comments")
             if isinstance(comments, dict):
                 total = comments.get("total_count")
+                if isinstance(total, bool):
+                    continue
                 if isinstance(total, (int, float)):
-                    return int(total)
+                    return {"count": int(total)}
         comments = node.get("comments")
         if isinstance(comments, dict):
             total = comments.get("total_count")
+            if isinstance(total, bool):
+                continue
             if isinstance(total, (int, float)):
-                return int(total)
+                return {"count": int(total)}
+    # direct
+    for path in (
+        ("feedback", "comment_rendering_instance", "comments", "total_count"),
+        ("feedback", "total_comment_count"),
+    ):
+        v = _get_path(story, path)
+        if isinstance(v, bool): continue
+        if isinstance(v, (int, float)):
+            return {"count": int(v)}
     return None
 
 
@@ -118,6 +147,12 @@ def _extract_author(story: dict) -> tuple[str | None, str | None]:
     owning = _get_path(story, ("feedback", "owning_profile"))
     if isinstance(owning, dict) and owning.get("name"):
         return str(owning["name"]).strip(), None
+    # try deeper
+    for node in _iter_dicts(story):
+        if node.get("name") and node.get("__typename") in ("User", "Page"):
+            # prefer actor-like
+            if node.get("url") or "profile_picture" in node:
+                return str(node.get("name")).strip(), node.get("url") if isinstance(node.get("url"), str) else None
     return None, None
 
 
@@ -137,6 +172,13 @@ def _extract_group_id(story: dict, fallback_group_id: str | None = None) -> str 
             if match:
                 return match.group(1)
 
+    # walk
+    for node in _iter_dicts(story):
+        if isinstance(node.get("id"), str) and node.get("__typename") == "Group":
+            # check context
+            if node.get("name") or "group" in str(node).lower():
+                # but could be elsewhere; only take if near context
+                pass
     return fallback_group_id
 
 
@@ -144,17 +186,23 @@ def _extract_permalink(story: dict, group_id: str | None, post_id: str | None) -
     for path in (
         ("permalink_url",),
         ("url",),
+        ("shareable_from_perspective_of_feed_ufi", "url"),
+        ("shareable_from_perspective_of_feed_ufi", "permalink_url"),
+        ("feedback", "url"),
+        ("feedback", "permalink_url"),
         ("comet_sections", "content", "story", "permalink_url"),
         ("comet_sections", "content", "story", "url"),
         ("comet_sections", "content", "story", "comet_sections", "message", "story", "permalink_url"),
         ("comet_sections", "content", "story", "comet_sections", "message", "story", "url"),
     ):
         value = _get_path(story, path)
-        if isinstance(value, str) and value.strip():
+        if isinstance(value, str) and value.strip().startswith("http"):
             return value.strip()
 
     if group_id and post_id:
         return f"https://www.facebook.com/groups/{group_id}/posts/{post_id}/"
+    if post_id:
+        return f"https://www.facebook.com/posts/{post_id}/"
     return None
 
 
@@ -244,13 +292,15 @@ def _published_at(story: dict) -> str | None:
     timestamp = story.get("creation_time")
     if timestamp is None:
         timestamp = _get_path(story, ("comet_sections", "timestamp", "story", "creation_time"))
+    if timestamp is None:
+        timestamp = _get_path(story, ("timestamp", "story", "creation_time"))
     if isinstance(timestamp, bool):
         return None
     if isinstance(timestamp, (int, float)):
         try:
             return _datetime.datetime.fromtimestamp(
                 int(timestamp), tz=_datetime.timezone.utc
-            ).isoformat()
+            ).isoformat().replace("+00:00", "Z")
         except (OverflowError, OSError, ValueError):
             return None
     return None
@@ -308,44 +358,95 @@ def extract_posts_from_graphql_response(
     scope: str = "search",
     fallback_group_id: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Lấy các bài PUBLIC_POSTS/TOP_PUBLIC_POSTS từ response Search GraphQL.
-
-    Bỏ qua page/group card, quảng cáo và survey. Trả về danh sách theo đúng
-    thứ tự xuất hiện trong response.
-    """
+    """Lấy các bài PUBLIC_POSTS/TOP_PUBLIC_POSTS từ response GraphQL."""
     if not isinstance(payload, dict):
         return []
 
-    data = payload.get("data") if "data" in payload else payload
-    results = _get_path(data, ("serpResponse", "results"))
-    if not isinstance(results, dict):
-        return []
-
     posts: list[dict[str, Any]] = []
-    for edge in results.get("edges") or []:
-        if not isinstance(edge, dict):
-            continue
-        node = edge.get("node")
-        if not isinstance(node, dict) or node.get("role") not in POST_ROLES:
-            continue
 
-        view_model = _get_path(edge, ("rendering_strategy", "view_model"))
-        if not isinstance(view_model, dict):
-            continue
+    # Handle NDJSON/streaming responses - payload might have extensions.ndjson_objects
+    # or be wrapped differently
+    data = payload.get("data") if "data" in payload else payload
 
-        click_model = view_model.get("click_model")
-        story = None
-        if isinstance(click_model, dict):
-            story = click_model.get("story")
-        if not isinstance(story, dict):
-            story = view_model.get("story")
-        if not isinstance(story, dict):
-            continue
-
-        post = parse_graphql_post(
-            story, scope=scope, fallback_group_id=fallback_group_id
+    # Group feed: data.node.group_feed.edges[].node (Story)
+    if isinstance(data, dict):
+        group_feed = _get_path(data, ("node", "group_feed")) or _get_path(
+            data, ("group", "group_feed")
         )
-        if post:
-            posts.append(post)
+        if isinstance(group_feed, dict):
+            for edge in group_feed.get("edges") or []:
+                if not isinstance(edge, dict):
+                    continue
+                story = edge.get("node")
+                if not isinstance(story, dict):
+                    continue
+                t = story.get("__typename") or ""
+                if t in ("GroupsSectionHeaderUnit", "GroupsFeedUnitHeader", "GroupsCometFeedUnitHeader", "GroupsSectionHeader"):
+                    continue
+                if t and t != "Story":
+                    continue
+                post = parse_graphql_post(
+                    story, scope=scope, fallback_group_id=fallback_group_id
+                )
+                if post:
+                    posts.append(post)
+            if posts:
+                return posts
+
+        # Check if this is a streamed response with labeled data
+        if payload.get("label") and payload.get("data"):
+            labeled_data = payload.get("data")
+            if isinstance(labeled_data, dict):
+                node = labeled_data.get("node")
+                if isinstance(node, dict) and node.get("__typename") == "Story":
+                    post = parse_graphql_post(
+                        node, scope=scope, fallback_group_id=fallback_group_id
+                    )
+                    if post:
+                        posts.append(post)
+                        return posts
+
+    # Also check root payload for labeled entries
+    if payload.get("label") and "GroupsCometFeedRegularStories" in str(payload.get("label", "")):
+        labeled_data = payload.get("data")
+        if isinstance(labeled_data, dict):
+            node = labeled_data.get("node")
+            if isinstance(node, dict):
+                post = parse_graphql_post(
+                    node, scope=scope, fallback_group_id=fallback_group_id
+                )
+                if post:
+                    posts.append(post)
+                    return posts
+
+    results = _get_path(data, ("serpResponse", "results"))
+    if isinstance(results, dict):
+        for edge in results.get("edges") or []:
+            if not isinstance(edge, dict):
+                continue
+            node = edge.get("node")
+            if not isinstance(node, dict) or node.get("role") not in POST_ROLES:
+                continue
+
+            view_model = _get_path(edge, ("rendering_strategy", "view_model"))
+            if not isinstance(view_model, dict):
+                continue
+
+            click_model = view_model.get("click_model")
+            story = None
+            if isinstance(click_model, dict):
+                story = click_model.get("story")
+            if not isinstance(story, dict):
+                story = view_model.get("story")
+            if not isinstance(story, dict):
+                continue
+
+            post = parse_graphql_post(
+                story, scope=scope, fallback_group_id=fallback_group_id
+            )
+            if post:
+                posts.append(post)
+        if posts:
+            return posts
 
     return posts

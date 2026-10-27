@@ -8,10 +8,10 @@ from tkinter import messagebox, ttk
 
 import bot  # Import module bot chứa FacebookBot
 from services.ui_theme import (
-    DangerButton,
     INFO_COLOR,
     TEXT_MUTED,
     TitledFrame,
+    ScanActionBar,
     apply_theme,
     status_color,
 )
@@ -96,31 +96,26 @@ class UidScanScreen(ctk.CTkFrame):
             width=8,
         ).grid(row=1, column=1, sticky="w", padx=5, pady=3)
 
-        # 3. Cụm nút bấm điều khiển
-        btn_action_frame = ctk.CTkFrame(left_body, fg_color="transparent")
-        btn_action_frame.pack(fill="x", pady=(5, 10))
-
-        self.btn_start = ctk.CTkButton(
-            btn_action_frame, text="▶ Bắt đầu quét", command=self.start_uid_scan
+        # 3. Cụm nút bấm điều khiển (dùng chung với tab Quét bài)
+        self.action_bar = ScanActionBar(
+            left_body,
+            start_command=self.start_uid_scan,
+            stop_command=self.stop_uid_scan,
         )
-        self.btn_start.pack(side="left", fill="x", expand=True, padx=(0, 3))
-
-        self.btn_stop = DangerButton(
-            btn_action_frame,
-            text="⏹ Dừng quét",
-            command=self.stop_uid_scan,
-            state="disabled",
-        )
-        self.btn_stop.pack(side="right", fill="x", expand=True, padx=(3, 0))
+        self.action_bar.pack(fill="x", pady=(5, 10))
+        self.btn_start = self.action_bar.btn_start
+        self.btn_stop = self.action_bar.btn_stop
 
         # Hiển thị Trạng thái
         self.lbl_status = ctk.CTkLabel(
             left_body,
-            text="Trạng thái: Sẵn sàng",
+            text="Trạng thái: Sẵn sàng quét UID.",
             text_color=INFO_COLOR,
+            wraplength=310,
+            justify="left",
             anchor="w",
         )
-        self.lbl_status.pack(anchor="w")
+        self.lbl_status.pack(anchor="w", pady=(10, 0))
 
         # ================= CỘT PHẢI: BẢNG KẾT QUẢ QUÉT =================
         right_frame = TitledFrame(self.parent, title=" Tiến trình quét theo Group ")
@@ -198,7 +193,7 @@ class UidScanScreen(ctk.CTkFrame):
         """Hàm xử lý khi người dùng ấn nút Dừng"""
         self.stop_event.set()
         self.set_status("Đang dọn dẹp và dừng tiến trình...", color="red")
-        self.btn_stop.configure(state="disabled")
+        self.action_bar.mark_stopping()
 
     # =========================================================================
     # LOGIC CHẠY TỰ ĐỘNG VỚI SELENIUM THREADING
@@ -265,8 +260,7 @@ class UidScanScreen(ctk.CTkFrame):
         user_agent = self.controller.get_user_agent()
 
         # 3. Vô hiệu hóa nút Bắt đầu & Kích hoạt nút Dừng
-        self.btn_start.configure(state="disabled", text="Đang quét...")
-        self.btn_stop.configure(state="normal")
+        self.action_bar.mark_running()
         self.set_status(f"Đang khởi tạo trình duyệt cho {len(source_groups)} groups...", color="orange")
 
         # 4. Tạo thread chạy Selenium ngầm (daemon=True)
@@ -359,8 +353,7 @@ class UidScanScreen(ctk.CTkFrame):
 
             # Cập nhật UI kết thúc
             is_stopped = self.stop_event.is_set()
-            self.after(0, lambda: self.btn_start.configure(state="normal", text="Bắt đầu quét"))
-            self.after(0, lambda: self.btn_stop.configure(state="disabled"))
+            self.after(0, self.action_bar.mark_idle)
             self.after(0, lambda: self.set_status(
                 "Đã dừng quét" if is_stopped else "Hoàn tất quét",
                 color="red" if is_stopped else "green"

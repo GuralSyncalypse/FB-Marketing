@@ -7,13 +7,13 @@ import threading
 import bot
 from services.ui_theme import (
     BG_PANEL,
-    DangerButton,
     ERROR_COLOR,
     INFO_COLOR,
     SUCCESS_COLOR,
     TEXT_MUTED,
     TitledFrame,
     WARNING_COLOR,
+    ScanActionBar,
     apply_theme,
 )
 
@@ -85,32 +85,22 @@ class PostScanScreen(ctk.CTkFrame):
         )
         self.lbl_scope_help.pack(anchor="w", pady=(8, 0))
 
-        search_box = TitledFrame(config_scroll, title=" Thanh Search ")
-        search_box.pack(fill="x", pady=(0, 10))
-        search_box.body.columnconfigure(0, weight=1)
+        self.search_box = TitledFrame(config_scroll, title=" Từ khóa Search ")
+        self.search_box.pack(fill="x", pady=(0, 10))
+        self.search_box.body.columnconfigure(0, weight=1)
 
-        ctk.CTkLabel(search_box.body, text="Từ khóa tìm bài:").grid(row=0, column=0, sticky="w")
-        self.ent_keyword = ctk.CTkEntry(search_box.body)
+        ctk.CTkLabel(self.search_box.body, text="Từ khóa tìm bài:").grid(
+            row=0, column=0, sticky="w"
+        )
+        self.ent_keyword = ctk.CTkEntry(self.search_box.body)
         self.ent_keyword.grid(row=1, column=0, sticky="ew", pady=(4, 0))
-        ctk.CTkLabel(
-            search_box.body,
-            text="Dùng cho phạm vi Search tổng quát.",
-            text_color=TEXT_MUTED,
-            font=ctk.CTkFont(size=11, slant="italic"),
-        ).grid(row=2, column=0, sticky="w", pady=(4, 0))
 
         self.chk_recent_posts = ctk.CTkCheckBox(
-            search_box.body,
-            text="Bài đăng gần đây",
+            self.search_box.body,
+            text="Ưu tiên bài đăng gần đây",
             variable=self.var_recent_posts,
         )
-        self.chk_recent_posts.grid(row=3, column=0, sticky="w", pady=(8, 0))
-        ctk.CTkLabel(
-            search_box.body,
-            text="Lọc recent_posts: ưu tiên bài mới nhất.",
-            text_color=TEXT_MUTED,
-            font=ctk.CTkFont(size=11, slant="italic"),
-        ).grid(row=4, column=0, sticky="w", pady=(2, 0))
+        self.chk_recent_posts.grid(row=2, column=0, sticky="w", pady=(8, 0))
 
         self.group_box = TitledFrame(config_scroll, title=" Phạm vi Group ")
         self.group_box.pack(fill="x", pady=(0, 10))
@@ -125,11 +115,14 @@ class PostScanScreen(ctk.CTkFrame):
             font=ctk.CTkFont(size=11, slant="italic"),
         ).pack(anchor="w", pady=(4, 0))
 
-        filter_box = TitledFrame(config_scroll, title=" Bộ lọc cơ bản ")
-        filter_box.pack(fill="x", pady=(0, 10))
-        filter_box.body.columnconfigure(1, weight=1)
+        self.filter_box = TitledFrame(config_scroll, title=" Bộ lọc ")
+        self.filter_box.pack(fill="x", pady=(0, 10))
+        self.filter_box.body.columnconfigure(1, weight=1)
+        filter_box = self.filter_box
 
-        ctk.CTkLabel(filter_box.body, text="Số bài tối đa:").grid(row=0, column=0, sticky="w", pady=3)
+        ctk.CTkLabel(filter_box.body, text="Số bài tối đa:").grid(
+            row=0, column=0, sticky="w", pady=3
+        )
         ttk.Spinbox(
             filter_box.body,
             from_=1,
@@ -139,9 +132,10 @@ class PostScanScreen(ctk.CTkFrame):
             width=10,
         ).grid(row=0, column=1, sticky="w", padx=(8, 0), pady=3)
 
-        ctk.CTkLabel(filter_box.body, text="Khoảng thời gian:").grid(
-            row=1, column=0, sticky="w", pady=3
+        self.lbl_time_range = ctk.CTkLabel(
+            filter_box.body, text="Khoảng thời gian:"
         )
+        self.lbl_time_range.grid(row=1, column=0, sticky="w", pady=3)
         self.cbo_time_range = ctk.CTkComboBox(
             filter_box.body,
             values=("24 giờ gần đây", "7 ngày gần đây", "30 ngày gần đây", "Không giới hạn"),
@@ -150,9 +144,8 @@ class PostScanScreen(ctk.CTkFrame):
         self.cbo_time_range.set("7 ngày gần đây")
         self.cbo_time_range.grid(row=1, column=1, sticky="ew", padx=(8, 0), pady=3)
 
-        ctk.CTkLabel(filter_box.body, text="Loại bài:").grid(
-            row=2, column=0, sticky="w", pady=3
-        )
+        self.lbl_post_type = ctk.CTkLabel(filter_box.body, text="Loại bài:")
+        self.lbl_post_type.grid(row=2, column=0, sticky="w", pady=3)
         self.cbo_post_type = ctk.CTkComboBox(
             filter_box.body,
             values=("Tất cả", "Bài có ảnh/video", "Bài có link", "Bài văn bản"),
@@ -163,7 +156,7 @@ class PostScanScreen(ctk.CTkFrame):
 
         self.lbl_filter_help = ctk.CTkLabel(
             filter_box.body,
-            text="Chỉ áp dụng cho Search. Thời gian lọc theo ngày đăng từ GraphQL.",
+            text="Thời gian/loại bài chỉ áp dụng cho Search.",
             text_color=TEXT_MUTED,
             font=ctk.CTkFont(size=11, slant="italic"),
             wraplength=290,
@@ -174,64 +167,22 @@ class PostScanScreen(ctk.CTkFrame):
             row=3, column=0, columnspan=2, sticky="w", pady=(4, 0)
         )
 
-        # Các tùy chọn chưa được nối vào backend -> gom riêng để không gây
-        # hiểu nhầm là đang có hiệu lực.
-        unavailable_box = TitledFrame(config_scroll, title=" Chưa có ")
-        unavailable_box.pack(fill="x", pady=(0, 10))
-
-        ctk.CTkLabel(
-            unavailable_box.body,
-            text="Tùy chọn dữ liệu lưu dưới đây chưa được hỗ trợ, hiện không có tác dụng.",
-            text_color=WARNING_COLOR,
-            font=ctk.CTkFont(size=11, slant="italic"),
-            wraplength=290,
-            justify="left",
-            anchor="w",
-        ).pack(anchor="w", pady=(0, 6))
-
-        self.var_content = tk.BooleanVar(value=True)
-        self.var_author = tk.BooleanVar(value=True)
-        ctk.CTkCheckBox(
-            unavailable_box.body,
-            text="Nội dung và link bài",
-            variable=self.var_content,
-            state="disabled",
-        ).pack(anchor="w")
-        ctk.CTkCheckBox(
-            unavailable_box.body,
-            text="Tác giả và thời gian đăng",
-            variable=self.var_author,
-            state="disabled",
-        ).pack(anchor="w")
-
         footer_frame = ctk.CTkFrame(left_container, fg_color="transparent")
         footer_frame.grid(row=1, column=0, sticky="ew", padx=12, pady=(8, 0))
-        action_box = ctk.CTkFrame(footer_frame, fg_color="transparent")
-        action_box.pack(fill="x")
-        self.btn_start = ctk.CTkButton(
-            action_box, text="Bắt đầu phân tích", command=self.start_post_scan
-        )
-        self.btn_start.pack(side="left", fill="x", expand=True, padx=(0, 4))
-        self.btn_stop = DangerButton(
-            action_box,
-            text="Dừng",
-            command=self.stop_post_scan,
-            state="disabled",
-        )
-        self.btn_stop.pack(side="right", padx=(4, 0))
 
-        utility_box = ctk.CTkFrame(footer_frame, fg_color="transparent")
-        utility_box.pack(fill="x", pady=(6, 0))
-        ctk.CTkButton(
-            utility_box, text="Kiểm tra cấu hình", command=self.validate_configuration
-        ).pack(side="left", fill="x", expand=True, padx=(0, 4))
-        ctk.CTkButton(
-            utility_box, text="Xóa kết quả", command=self.clear_results
-        ).pack(side="right", fill="x", expand=True, padx=(4, 0))
+        # Cụm nút dùng chung với tab Quét UID để đồng bộ thao tác.
+        self.action_bar = ScanActionBar(
+            footer_frame,
+            start_command=self.start_post_scan,
+            stop_command=self.stop_post_scan,
+        )
+        self.action_bar.pack(fill="x")
+        self.btn_start = self.action_bar.btn_start
+        self.btn_stop = self.action_bar.btn_stop
 
         self.lbl_status = ctk.CTkLabel(
             footer_frame,
-            text="Trạng thái: Sẵn sàng cấu hình quét bài.",
+            text="Trạng thái: Sẵn sàng quét bài.",
             text_color=INFO_COLOR,
             wraplength=310,
             justify="left",
@@ -272,17 +223,31 @@ class PostScanScreen(ctk.CTkFrame):
         scrollbar.grid(row=0, column=1, sticky="ns")
         hscrollbar.grid(row=1, column=0, sticky="ew")
 
+        result_footer = ctk.CTkFrame(right_frame.body, fg_color="transparent")
+        result_footer.pack(fill="x", pady=(8, 0))
+
         ctk.CTkLabel(
-            right_frame.body,
+            result_footer,
             text=(
-                "Kết quả được lưu JSON trong data/<uid>/raw; "
-                "Excel và CSV trong data/<uid>/exports."
+                "Kết quả lưu JSON trong data/<uid>/raw; "
+                "Excel/CSV trong data/<uid>/exports."
             ),
             text_color=TEXT_MUTED,
             font=ctk.CTkFont(size=11, slant="italic"),
             justify="left",
             anchor="w",
-        ).pack(anchor="w", pady=(8, 0))
+        ).pack(side="left", fill="x", expand=True)
+
+        ctk.CTkButton(
+            result_footer,
+            text="Xóa kết quả",
+            command=self.clear_results,
+            width=100,
+            height=26,
+            fg_color="transparent",
+            border_width=1,
+            text_color=TEXT_MUTED,
+        ).pack(side="right", padx=(10, 0))
 
         self._update_scope_ui()
 
@@ -290,37 +255,46 @@ class PostScanScreen(ctk.CTkFrame):
         groups = getattr(self.controller, "groups_data", []) or []
         selected_count = sum(1 for group in groups if group.get("checked", False))
         self.lbl_group_source.configure(
-            text=f"Đã lưu: {len(groups)} group | Đã chọn: {selected_count} group"
+            text=f"Tổng groups: {len(groups)} | Đang chọn: {selected_count}"
         )
 
     def _update_scope_ui(self):
+        """Chỉ hiển thị đúng phần cấu hình liên quan tới phạm vi đang chọn."""
         is_search_scope = self.scope_var.get() == "search"
-        self.ent_keyword.configure(state="normal" if is_search_scope else "disabled")
-        self.chk_recent_posts.configure(
-            state="normal" if is_search_scope else "disabled"
-        )
-        # Bộ lọc thời gian/loại bài mới chỉ hỗ trợ Search.
-        filter_state = "readonly" if is_search_scope else "disabled"
-        self.cbo_time_range.configure(state=filter_state)
-        self.cbo_post_type.configure(state=filter_state)
-        self.lbl_filter_help.configure(
-            text=(
-                "Chỉ áp dụng cho Search. Thời gian lọc theo ngày đăng từ GraphQL."
-                if is_search_scope
-                else "Bộ lọc thời gian/loại bài chưa hỗ trợ cho Group."
+
+        if is_search_scope:
+            self.group_box.pack_forget()
+            self.search_box.pack(
+                fill="x", pady=(0, 10), before=self.filter_box
             )
-        )
+        else:
+            self.search_box.pack_forget()
+            self.group_box.pack(
+                fill="x", pady=(0, 10), before=self.filter_box
+            )
+
+        # Bộ lọc thời gian/loại bài chỉ hỗ trợ Search: ẩn hẳn khi quét Group
+        # thay vì để các ô bị vô hiệu hóa gây rối mắt.
+        self.lbl_time_range.grid_remove()
+        self.cbo_time_range.grid_remove()
+        self.lbl_post_type.grid_remove()
+        self.cbo_post_type.grid_remove()
+        self.lbl_filter_help.grid_remove()
+        if is_search_scope:
+            self.lbl_time_range.grid()
+            self.cbo_time_range.grid()
+            self.lbl_post_type.grid()
+            self.cbo_post_type.grid()
+            self.lbl_filter_help.grid()
+
         self.lbl_scope_help.configure(
             text=(
-                "Search là phạm vi rộng nhất; quét bài theo từ khóa trên Facebook."
+                "Quét bài theo từ khóa trên toàn Facebook."
                 if is_search_scope
-                else "Group là phạm vi hẹp hơn; chỉ quét các group đã được chọn."
+                else "Chỉ quét bài trong các group đã chọn."
             )
         )
         self.refresh_groups_preview()
-
-    def validate_configuration(self):
-        return self._get_scan_configuration() is not None
 
     def _get_scan_configuration(self):
         if not self.controller.has_uid:
@@ -383,8 +357,7 @@ class PostScanScreen(ctk.CTkFrame):
             return
 
         self.stop_event.clear()
-        self.btn_start.configure(state="disabled", text="Đang mở Facebook...")
-        self.btn_stop.configure(state="normal")
+        self.action_bar.mark_running()
         self.lbl_status.configure(
             text="Trạng thái: Đang khởi tạo browser để phân tích bài viết...",
             text_color=WARNING_COLOR,
@@ -397,7 +370,7 @@ class PostScanScreen(ctk.CTkFrame):
 
     def stop_post_scan(self):
         self.stop_event.set()
-        self.btn_stop.configure(state="disabled")
+        self.action_bar.mark_stopping()
         self.lbl_status.configure(
             text="Trạng thái: Đang dừng và đóng browser...", text_color=ERROR_COLOR
         )
@@ -506,8 +479,7 @@ class PostScanScreen(ctk.CTkFrame):
                 except Exception:
                     pass
             self.current_bot = None
-            self.after(0, lambda: self.btn_start.configure(state="normal", text="Bắt đầu phân tích"))
-            self.after(0, lambda: self.btn_stop.configure(state="disabled"))
+            self.after(0, self.action_bar.mark_idle)
 
     def clear_results(self):
         self.scan_results.clear()

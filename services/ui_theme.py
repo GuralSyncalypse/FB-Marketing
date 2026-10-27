@@ -132,6 +132,67 @@ class DangerButton(ctk.CTkButton):
             pass
 
 
+class ScanActionBar(ctk.CTkFrame):
+    """Cụm nút Bắt đầu/Dừng dùng chung cho các màn hình quét.
+
+    Hai nút luôn chia đôi chiều ngang, cùng nhãn và cùng trạng thái để người
+    dùng không phải học lại giao diện khi chuyển tab.
+    """
+
+    START_TEXT = "▶ Bắt đầu quét"
+    RUNNING_TEXT = "⏳ Đang quét..."
+    STOP_TEXT = "⏹ Dừng quét"
+    STOPPING_TEXT = "⏳ Đang dừng..."
+
+    def __init__(
+        self,
+        master,
+        *,
+        start_command,
+        stop_command,
+        start_text=None,
+        stop_text=None,
+        **kwargs,
+    ):
+        kwargs.setdefault("fg_color", "transparent")
+        super().__init__(master, **kwargs)
+
+        self._start_text = start_text or self.START_TEXT
+        self._stop_text = stop_text or self.STOP_TEXT
+
+        self.columnconfigure(0, weight=1, uniform="scan_action")
+        self.columnconfigure(1, weight=1, uniform="scan_action")
+
+        self.btn_start = ctk.CTkButton(
+            self, text=self._start_text, command=start_command
+        )
+        self.btn_start.grid(row=0, column=0, sticky="ew", padx=(0, 4))
+
+        self.btn_stop = DangerButton(
+            self,
+            text=self._stop_text,
+            command=stop_command,
+            state="disabled",
+        )
+        self.btn_stop.grid(row=0, column=1, sticky="ew", padx=(4, 0))
+
+    def mark_running(self, text=None):
+        """Khóa nút Bắt đầu và mở nút Dừng khi tiến trình bắt đầu."""
+        self.btn_start.configure(
+            state="disabled", text=text or self.RUNNING_TEXT
+        )
+        self.btn_stop.configure(state="normal", text=self._stop_text)
+
+    def mark_stopping(self):
+        """Vô hiệu hóa nút Dừng trong lúc dọn dẹp."""
+        self.btn_stop.configure(state="disabled", text=self.STOPPING_TEXT)
+
+    def mark_idle(self):
+        """Trả hai nút về trạng thái sẵn sàng."""
+        self.btn_start.configure(state="normal", text=self._start_text)
+        self.btn_stop.configure(state="disabled", text=self._stop_text)
+
+
 def apply_theme():
     """Áp appearance mode của CTk và style các widget ttk còn giữ lại.
 

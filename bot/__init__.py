@@ -25,7 +25,10 @@ import datetime as dt
 import unicodedata
 import pandas as pd
 
-from services.graphql_post_extractor import extract_posts_from_graphql_response
+from services.graphql_post_extractor import (
+    extract_posts_from_graphql_response,
+    parse_graphql_post,
+)
 from services.post_extractor import (
     dedupe_posts,
     extract_posts,
@@ -925,6 +928,18 @@ class FacebookBot(
                         graph_posts = []
                     for post in graph_posts:
                         collected.setdefault(post_key(post), post)
+                elif normalized_scope == "groups" and group_id:
+                    remaining = max_posts - len(collected) if max_posts else 0
+                    try:
+                        graph_posts = self._collect_group_posts_from_graphql(
+                            group_id,
+                            max_posts=remaining,
+                        )
+                    except Exception as error:
+                        print(f"[Post Scan] Bỏ qua GraphQL group feed: {error}")
+                        graph_posts = []
+                    for post in graph_posts:
+                        collected.setdefault(post_key(post), post)
 
                 if max_posts and len(collected) >= max_posts:
                     skip_dom_extraction = True
@@ -1093,8 +1108,11 @@ class FacebookBot(
                 recent_posts=recent_posts,
             )
             output_file = "search_posts_response.json"
-            with open(output_file, "w", encoding="utf-8") as f:
-                json.dump(raw, f, ensure_ascii=False, indent=2)
+            try:
+                with open(output_file, "w", encoding="utf-8") as f:
+                    json.dump(raw, f, ensure_ascii=False, indent=2)
+            except Exception:
+                pass
 
             if not isinstance(raw, dict) or raw.get("error"):
                 error = raw.get("error") if isinstance(raw, dict) else "INVALID_RESPONSE"
@@ -1150,6 +1168,77 @@ class FacebookBot(
             if len(collected) >= limit:
                 break
             time.sleep(random.uniform(1.0, 2.0))
+
+        return list(collected.values())[:limit]
+
+    def _collect_group_posts_from_graphql(
+        self,
+        group_id: str,
+        max_posts: int = 0,
+        page_size: int = 3,
+    ) -> list[dict]:
+        """Lấy bài từ feed group bằng GraphQL GroupsCometFeedRegularStoriesPaginationQuery."""
+        collected: dict[str, dict] = {}
+        cursor = None
+        request_index = 0
+        limit = max_posts if max_posts and max_posts > 0 else 100
+
+        while not self.is_stopped() and len(collected) < limit:
+            request_index += 1
+            count = min(page_size, max(1, limit - len(collected)))
+            raw = self.fetch_group_feed_posts(
+                group_id,
+                cursor=cursor,
+                count=count,
+            )
+
+            try:
+                with open("group_posts_response.json", "w", encoding="utf-8") as f:
+                    json.dump(raw, f, ensure_ascii=False, indent=2)
+            except Exception:
+                pass
+
+            if not isinstance(raw, dict) or raw.get("error"):
+                error = raw.get("error") if isinstance(raw, dict) else "INVALID_RESPONSE"
+                print(f"[Post Scan] GraphQL group #{request_index} lỗi: {error}")
+                break
+
+            raw_posts = extract_posts_from_graphql_response(
+                raw, scope="groups", fallback_group_id=group_id
+            )
+
+            new_count = 0
+            for post in raw_posts:
+                key = post_key(post)
+                if key in collected:
+                    continue
+                collected[key] = post
+                new_count += 1
+
+            print(
+                f"[Post Scan] GraphQL group {group_id} #{request_index}: "
+                f"+{new_count} bài (tổng {len(collected)})."
+            )
+
+            page_info = (
+                ((raw.get("data") or {}).get("node") or {})
+                .get("group_feed")
+                or {}
+            ).get("page_info") or {}
+            next_cursor = page_info.get("end_cursor")
+            if not page_info.get("has_next_page") or not next_cursor:
+                break
+            if next_cursor == cursor:
+                break
+            cursor = next_cursor
+
+            if not raw_posts:
+                break
+            if not new_count:
+                break
+            if len(collected) >= limit:
+                break
+            time.sleep(random.uniform(1.0, 1.6))
 
         return list(collected.values())[:limit]
 
