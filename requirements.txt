@@ -2,3 +2,13 @@ fastapi
 uvicorn
 jinja2
 rq
+selenium
+openpyxl
+pandas
+beautifulsoup4
+requests
+google-genai
+python-dotenv
+playwright
+customtkinter
+setuptools

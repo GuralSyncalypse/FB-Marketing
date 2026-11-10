@@ -1,431 +1,794 @@
-import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
 import json
 import os
 import threading
+from queue import Empty, Queue
+import tkinter as tk
+from tkinter import filedialog, messagebox, ttk
 import urllib.parse
-import bot
 
-from views.dev_screen import DevelopScreen
-from views.post_screen import PostScreen
-from views.sms_screen import SmsScreen
+import customtkinter as ctk
+
+import bot
+from services.cookie_store import CookieStore
 from services.local_server import start_local_server
+from services.profile_manager import ProfileManager, load_config, save_config
+from services.ui_theme import TitledFrame, apply_theme
+from views.dev_screen import DevelopScreen
+from views.comment_scan_screen import CommentScanScreen
+from views.post_screen import PostScreen
+from views.post_scan_screen import PostScanScreen
+from views.reaction_scan_screen import ReactionScanScreen
+from views.sms_screen import SmsScreen
+from views.uid_scan_screen import UidScanScreen
+
+
+BASE_DIR = bot.APP_DIR
+GROUPS_FILE = os.path.join(BASE_DIR, "groups_saved.json")
+
 
 # ================= CLASS GIAO DIỆN CHÍNH (APP) =================
-class App(tk.Tk):
-    def __init__(self):
-        super().__init__()
-        self.title("Phần mềm Quản lý Tính năng - Nhận Data từ Extension")
-        self.geometry("950x700")
-        
-        # --- Khởi tạo dữ liệu ---
-        self.selected_files_s1 = []
-        self.selected_files_s2 = []
-        self.empty_uid = "Chờ tín hiệu từ Extension..."
-        
-        # Biến lưu trữ dữ liệu từ server
-        self.uid = ""
-        self.cookies = []
-        self.user_agent = ""
+class App(ctk.CTk):
 
-        # --- Xây dựng các thành phần Giao diện (Tách hàm) ---
-        # Quy tắc pack: Thành phần nào cố định kích thước/muốn giữ chỗ thì build trước hoặc pack trước.
-        self._build_shared_panel()      # 1. Khu vực thông tin phía trên (Cố định chiều cao)
-        #self._build_log_panel()         # 2. Khu vực Log phía dưới (Cố định chiều cao, không cho expand)
-        self._build_navigation_tabs(2)   # 3. Khu vực Notebook ở giữa (Sẽ tự giãn nở chiếm phần còn lại)
+  def __init__(self):
+    super().__init__()
+    apply_theme()  # Cấu hình CustomTkinter + style các widget ttk giữ lại
+    self.title("H2 Tool - Công cụ Marketing Facebook")
 
-        # --- Khởi chạy dịch vụ ngầm ---
-        start_local_server(
-            port=8000, 
-            on_uid_received_callback=self.on_server_received, 
-            on_log_callback=None
-        )
+    # Cửa sổ vừa với màn hình (kể cả màn hình 768px) và căn giữa
+    win_w = 950
+    win_h = min(700, self.winfo_screenheight() - 90)
+    win_x = max(0, (self.winfo_screenwidth() - win_w) // 2)
+    win_y = max(0, (self.winfo_screenheight() - win_h) // 2 - 20)
+    self.geometry(f"{win_w}x{win_h}+{win_x}+{win_y}")
 
-    def _build_shared_panel(self):
-        """Xây dựng khu vực cấu hình thông tin tài khoản dùng chung phía trên (Đã thu gọn)"""
-        top_shared_frame = ttk.LabelFrame(
-            self,
-            text=" Thông tin tài khoản hiện tại ",
-            padding=10
-        )
-        top_shared_frame.pack(side="top", fill="x", padx=10, pady=5)
+    self.protocol("WM_DELETE_WINDOW", self.__on_close)
 
-        # Định hình layout sử dụng grid để kiểm soát khoảng cách tốt hơn thay vì pack hỗn hợp
-        top_shared_frame.columnconfigure(1, weight=1)
-        top_shared_frame.columnconfigure(3, weight=2) # Cho ô User Agent rộng hơn vì UA thường rất dài
+    # --- Biến cấu hình chung ---
+    config = load_config(BASE_DIR)
+    self.is_demo_mode = bool(config.get("demo_mode", False))
+    self.profile_mode = config.get("profile_mode", "persistent")
+    self.profile_manager = ProfileManager(BASE_DIR)
+    self.empty_uid = "Chờ tín hiệu từ Extension..."
+    self._closing = False
+    self._group_scan_bot = None
 
-        # HÀNG 1: UID & USER AGENT
-        # --- Cụm UID ---
-        ttk.Label(top_shared_frame, text="UID:", width=8).grid(row=0, column=0, sticky="w", pady=5)
-        self.ent_uid_shared = ttk.Entry(top_shared_frame, font=("Arial", 10, "bold"), width=25)
-        self.ent_uid_shared.grid(row=0, column=1, sticky="w", pady=5, padx=(0, 20))
-        self.ent_uid_shared.insert(0, self.empty_uid)
 
-        # --- Cụm User Agent ---
-        ttk.Label(top_shared_frame, text="User Agent:").grid(row=0, column=2, sticky="w", pady=5)
-        self.ent_ua = ttk.Entry(top_shared_frame)
-        self.ent_ua.grid(row=0, column=3, sticky="ew", pady=5)
+    # --- Khởi tạo dữ liệu ---
+    self.has_uid = False
+    self._server_events = Queue()
+    self.selected_files_s1 = []
+    self.selected_files_s2 = []
 
-        # HÀNG 2: QUẢN LÝ GROUPS (Rút gọn thành hiển thị số lượng)
-        group_status_frame = ttk.Frame(top_shared_frame)
-        group_status_frame.grid(row=1, column=0, columnspan=4, sticky="ew", pady=(8, 0))
+    # Biến lưu trữ dữ liệu từ server
+    self.uid = ""
+    self.cookies = []
+    self.user_agent = ""
 
-        # Biến lưu trữ số lượng group để cập nhật động lên giao diện
-        self.lbl_group_count_var = tk.StringVar(value="Đã quét: 0 groups")
-        lbl_count = ttk.Label(group_status_frame, textvariable=self.lbl_group_count_var, font=("Arial", 10, "italic"))
-        lbl_count.pack(side="left", padx=(0, 15))
+    # Biến dùng chung
+    self.groups_data = []
 
-        btn_show_groups = ttk.Button(
-            group_status_frame,
-            text="Danh sách nhóm",
-            command=self.open_groups_window
-        )
-        btn_show_groups.pack(side="left")
-        
-        # Biến cục bộ để lưu danh sách group phục vụ cho cửa sổ popup (Cấu trúc ví dụ: [{"id": "1", "name": "Group A", "checked": True}, ...])
-        self.groups_data = []
-    
-    def get_selected_groups(self):
-        """Trả về danh sách các object group đang được tích chọn"""
-        if not hasattr(self, 'groups_data') or not self.groups_data:
-            return []
-        
-        # Lọc ra những nhóm có 'checked' là True
-        return [g for g in self.groups_data if g.get("checked", False)]
+    # --- Xây dựng các thành phần Giao diện ---
+    self.__build_menu()  # 🌟 Thêm thanh Taskbar / Menu Bar ở trên cùng
+    self.__build_shared_panel()  # 1. Khu vực thông tin phía trên (Cố định chiều cao)
+    self.__build_navigation_tabs()  # 2. Khu vực Notebook (Tab) chính
 
-    def open_groups_window(self):
-        """Mở cửa sổ mới (Popup) hiển thị chi tiết danh sách nhóm và tích chọn"""
+    # --- Khởi chạy dịch vụ ngầm ---
+    self.after(100, self._process_server_events)
+    start_local_server(
+        port=8000,
+        on_uid_received_callback=self.on_server_received
+    )
 
-        # --- 0. LẤY UID HIỆN TẠI ĐỂ KIỂM TRA TRONG FILE JSON ---
-        # Giả sử UID được lưu ở self.current_uid hoặc lấy từ UI chính, bạn chỉnh lại cho đúng tên biến nhé
-        current_uid = self.ent_uid_shared.get()
-        if not current_uid:
-            # Ví dụ nếu bạn lấy từ một ô Entry ở giao diện chính:
-            # current_uid = self.txt_user_id.get().strip()
-            pass
 
-        # --- TỰ ĐỘNG KIỂM TRA VÀ LOAD DỮ LIỆU TỪ FILE JSON KHI VỪA MỞ CỬA SỔ ---
-        file_path = "groups_saved.json"
-        if current_uid and os.path.exists(file_path):
-            try:
-                with open(file_path, "r", encoding="utf-8") as f:
-                    full_json_data = json.load(f)
+  # Hàm dùng chung
+  def get_uid(self) -> str:
+    """Lấy UID hiện tại từ Entry"""
+    return self.ent_uid_shared.get().strip()
 
-                    # Tìm xem trong list JSON có Object nào chứa key là UID hiện tại không
-                    found_data = False
-                    for item in full_json_data:
-                        if current_uid in item:
-                            # Đổ dữ liệu từ file vào biến của App
-                            self.groups_data = item[current_uid].get("groups", [])
-                            found_data = True
-                            print(
-                                f"Đã tự động nạp {len(self.groups_data)} nhóm của UID {current_uid} từ file JSON."
-                            )
-                            break
+  def get_user_agent(self) -> str:
+    """Lấy User Agent hiện tại từ Entry"""
+    return self.ent_ua.get().strip()
 
-                    if not found_data:
-                        # Nếu file tồn tại nhưng không có UID này, thiết lập list rỗng
-                        self.groups_data = []
-            except Exception as e:
-                print(f"Lỗi đọc file JSON khi mở cửa sổ: {e}")
-                self.groups_data = []
-        else:
-            # Nếu chưa chọn UID hoặc file chưa từng được tạo, giữ nguyên hoặc reset rỗng
-            if not hasattr(self, "groups_data"):
-                self.groups_data = []
+  # ---
 
-        # ================= KHỞI TẠO GIAO DIỆN POPUP =================
-        groups_win = tk.Toplevel(self)
-        groups_win.title("Quản lý danh sách Groups")
-        groups_win.geometry(
-            "550x450"
-        )  # Tăng nhẹ chiều rộng để vừa khít cụm Radiobutton
-        groups_win.grab_set()  # Khóa màn hình chính cho đến khi đóng cửa sổ này
-        groups_win.resizable(False, False)
+  @staticmethod
+  def _normalize_saved_groups_data(raw_data: object) -> dict:
+    """Chuẩn hóa dữ liệu groups_saved.json về dạng {uid: {"groups": [...]}}."""
+    if isinstance(raw_data, dict):
+      entries = [raw_data]
+    elif isinstance(raw_data, list):
+      entries = raw_data
+    else:
+      return {}
 
-        # Khung trên: Thanh công cụ/Nút hành động
-        toolbar = ttk.Frame(groups_win, padding=10)
-        toolbar.pack(fill="x")
+    normalized_data = {}
+    for entry in entries:
+      if not isinstance(entry, dict):
+        continue
 
-        # Khung dưới: Chứa danh sách Treeview
-        main_content = ttk.Frame(groups_win, padding=10)
-        main_content.pack(fill="both", expand=True)
+      for uid, payload in entry.items():
+        if not isinstance(payload, dict):
+          continue
 
-        # --- Cấu hình Treeview tích chọn ---
-        tree_groups = ttk.Treeview(
-            main_content, columns=("Select", "Name"), show="headings", selectmode="none"
-        )
+        groups = payload.get("groups", [])
+        normalized_data[str(uid)] = {
+          "groups": groups if isinstance(groups, list) else []
+        }
 
-        scrollbar = ttk.Scrollbar(
-            main_content, orient="vertical", command=tree_groups.yview
-        )
-        tree_groups.configure(yscrollcommand=scrollbar.set)
+    return normalized_data
 
-        tree_groups.heading("Select", text="Chọn")
-        tree_groups.heading("Name", text="Tên nhóm")
+  def load_data(self) -> list:
+    """Đọc dữ liệu của User chỉ trong 1 dòng"""
+    try:
+        self.screens["Quét UID"].refresh_groups_preview()
+        with open(GROUPS_FILE, "r", encoding="utf-8") as f:
+            raw_data = json.load(f)
+            data = self._normalize_saved_groups_data(raw_data)
+            # Lấy trực tiếp groups của uid, nếu không có trả về []
+            return data.get(str(self.uid), {}).get("groups", [])
+    except Exception:
+        return []
 
-        tree_groups.column("Select", width=60, anchor="center")
-        tree_groups.column("Name", width=430, anchor="w")
+  def save_data(self) -> bool:
+      """Lưu dữ liệu của User không cần vòng lặp"""
+      if not self.uid:
+          return False
 
-        tree_groups.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
+      file_path = GROUPS_FILE
+      data = {}
 
-        # --- Hàm cập nhật hiển thị Treeview từ dữ liệu `self.groups_data` ---
-        def refresh_tree():
-            tree_groups.delete(*tree_groups.get_children())
-            for idx, g in enumerate(self.groups_data):
-                status = "🟢 [X]" if g.get("checked", False) else "⚪ [ ]"
-                tree_groups.insert(
-                    "", "end", iid=str(idx), values=(status, g.get("name", ""))
-                )
+      # 1. Đọc file cũ
+      if os.path.exists(file_path):
+          try:
+              with open(file_path, "r", encoding="utf-8") as f:
+                  data = self._normalize_saved_groups_data(json.load(f))
+          except Exception:
+              data = {}
 
-            # Đồng bộ lại trạng thái của cụm Radiobutton dựa trên dữ liệu thực tế
-            update_radio_selection_state()
+      data = self._normalize_saved_groups_data(data)
 
-        # --- Sự kiện click để đảo trạng thái Checkbox từng dòng ---
-        def on_tree_click(event):
-            item_id = tree_groups.identify_row(event.y)
-            column = tree_groups.identify_column(event.x)
-            if item_id and column == "#1":
-                idx = int(item_id)
-                self.groups_data[idx]["checked"] = not self.groups_data[idx][
-                    "checked"
-                ]
-                refresh_tree()
+      # 2. Cập nhật hoặc thêm mới User trực tiếp
+      data[str(self.uid)] = {"groups": self.groups_data}
 
-        tree_groups.bind("<ButtonRelease-1>", on_tree_click)
+      # 3. Ghi lại file
+      with open(file_path, "w", encoding="utf-8") as f:
+          json.dump(data, f, ensure_ascii=False, indent=4)
+      return True
 
-        # --- Xử lý sự kiện khi bấm chọn Radiobutton (Chọn tất cả / Bỏ chọn tất cả) ---
-        def on_radio_changed():
-            val = rad_var.get()
-            if val == 1:  # Chọn tất cả
-                for g in self.groups_data:
-                    g["checked"] = True
-            elif val == 0:  # Bỏ chọn tất cả
-                for g in self.groups_data:
-                    g["checked"] = False
-            refresh_tree()
+  def __on_close(self):
+    if getattr(self, "_closing", False):
+      return
+    self._closing = True
+    print("Đang dừng tác vụ và lưu trạng thái ứng dụng...")
 
-        # Hàm bổ trợ: Kiểm tra dữ liệu để trả trạng thái hiển thị đúng cho Radiobutton
-        def update_radio_selection_state():
-            if not self.groups_data:
-                rad_var.set(-1)  # Không chọn cái nào nếu danh sách trống
-                return
+    # 1. Yêu cầu dừng + đóng mọi browser đang chạy. Nếu bỏ bước này,
+    #    chrome.exe sẽ mồ côi và giữ profile → lần mở sau gặp DevToolsActivePort.
+    for name, screen in list(getattr(self, "screens", {}).items()):
+      stop_event = getattr(screen, "stop_event", None)
+      if stop_event is not None:
+        try:
+          stop_event.set()
+        except Exception:
+          pass
 
-            all_checked = all(g.get("checked", False) for g in self.groups_data)
-            all_unchecked = all(not g.get("checked", False) for g in self.groups_data)
+      bot_obj = getattr(screen, "current_bot", None)
+      if bot_obj is not None:
+        try:
+          # close() đã chờ/kill chrome và nhả profile lock bên trong.
+          bot_obj.close()
+        except Exception as e:
+          print(f"[Close] {name}: {e}")
 
-            if all_checked:
-                rad_var.set(1)  # Tự bật Radio "Chọn tất cả"
-            elif all_unchecked:
-                rad_var.set(0)  # Tự bật Radio "Bỏ chọn"
-            else:
-                rad_var.set(-1)  # Trạng thái lấp lửng (không chọn radio nào)
+    # Bot của tab "Quét nhóm" không thuộc screen nào.
+    group_scan_bot = getattr(self, "_group_scan_bot", None)
+    if group_scan_bot is not None:
+      try:
+        group_scan_bot.close()
+      except Exception as e:
+        print(f"[Close] Quét nhóm: {e}")
 
-        # --- Xử lý nút quét dữ liệu mới ---
-        def handle_scan():
-            if not current_uid:
-                messagebox.showwarning(
-                    "Cảnh báo", "Vui lòng nhập/chọn UID trước khi quét!"
-                )
-                return
+    # 2. Lưu dữ liệu nhóm hiện tại của User
+    try:
+      self.save_data()
+    except Exception as e:
+      print(f"Không thể lưu trạng thái ứng dụng: {e}")
 
-            btn_scan.config(state="disabled", text="Đang quét...")
+    # 3. Cho worker một nhịp ngắn để thoát vòng lặp rồi mới đóng UI
+    try:
+      self.after(400, self.destroy)
+    except Exception:
+      self.destroy()
 
-            def local_refresh():
-                refresh_tree()
-                self.lbl_group_count_var.set(f"Đã quét: {len(self.groups_data)} groups")
-                btn_scan.config(state="normal", text="Quét")
-                messagebox.showinfo(
-                    "Thành công",
-                    f"Đã cập nhật {len(self.groups_data)} nhóm thành công!",
-                )
+  # ================= THANH MENU BAR (TASKBAR) =================
+  def __build_menu(self):
+    """Thanh menu trên cùng, dùng widget CustomTkinter để đồng bộ dark theme."""
+    topbar = ctk.CTkFrame(self, corner_radius=0)
+    topbar.pack(side="top", fill="x")
 
-            self._trigger_ui_refresh = local_refresh
-            # Hàm scan_groups này sẽ chạy hàm run_scan_groups(current_uid) ngầm ở luồng phụ mà bạn viết từ trước
-            self.scan_groups()
+    self.menu_settings = ctk.CTkOptionMenu(
+        topbar,
+        values=["Cấu hình hệ thống", "Thoát"],
+        command=self._on_settings_menu,
+        width=140,
+    )
+    self.menu_settings.set("Cài đặt")
+    self.menu_settings.pack(side="left", padx=8, pady=5)
 
-        # === KHỞI TẠO CÁC NÚT VÀ RADIOBUTTON TRÊN TOOLBAR ===
-        # Nút Quét
-        btn_scan = ttk.Button(toolbar, text="Quét", command=handle_scan)
-        btn_scan.pack(side="left", padx=5)
+  def _on_settings_menu(self, choice):
+    # Trả nhãn về "Cài đặt" sau mỗi lần chọn
+    self.menu_settings.set("Cài đặt")
+    if choice == "Cấu hình hệ thống":
+      self.open_settings_window()
+    elif choice == "Thoát":
+      self.__on_close()
 
-        # Cụm Radiobutton Điều khiển Trạng Thái Chọn
-        rad_var = tk.IntVar(value=-1)
+  def open_settings_window(self):
+    """Mở cửa sổ Popup Cài đặt hệ thống"""
+    settings_win = ctk.CTkToplevel(self)
+    settings_win.title("Cài đặt hệ thống")
+    settings_win.geometry("440x420")
+    settings_win.resizable(False, False)
+    settings_win.grab_set()  # Khóa tương tác với màn hình chính khi popup đang mở
 
-        rad_all = ttk.Radiobutton(
-            toolbar,
-            text="Chọn tất cả",
-            variable=rad_var,
-            value=1,
-            command=on_radio_changed,
-        )
-        rad_all.pack(side="left", padx=10)
+    # Tiêu đề Popup
+    ctk.CTkLabel(
+        settings_win, text="CẤU HÌNH CÀI ĐẶT", font=ctk.CTkFont(size=14, weight="bold")
+    ).pack(pady=(20, 10))
 
-        rad_none = ttk.Radiobutton(
-            toolbar,
-            text="Bỏ chọn tất cả",
-            variable=rad_var,
-            value=0,
-            command=on_radio_changed,
-        )
-        rad_none.pack(side="left", padx=5)
+    # Khung chứa nội dung cài đặt
+    form_frame = ctk.CTkFrame(settings_win, fg_color="transparent")
+    form_frame.pack(fill="both", expand=True, padx=18, pady=10)
 
-        # Nút Xác nhận & Đóng
-        def save_and_close():
-            selected_count = sum(1 for g in self.groups_data if g.get("checked", False))
-            self.lbl_group_count_var.set(
-                f"Đã quét: {len(self.groups_data)} groups (Đang chọn: {selected_count})"
+    # Biến quản lý trạng thái Checkbox
+    chk_demo_var = tk.BooleanVar(value=getattr(self, "is_demo_mode", False))
+
+    # --- TÙY CHỌN DEMO MODE (CHECKBOX) ---
+    chk_demo = ctk.CTkCheckBox(
+        form_frame,
+        text=" Demo Mode (hiện cửa sổ Chrome)",
+        variable=chk_demo_var,
+    )
+    chk_demo.pack(anchor="w", pady=(0, 12))
+
+    # --- CHẾ ĐỘ PROFILE ---
+    ctk.CTkLabel(
+        form_frame, text="Chế độ profile Chrome:", anchor="w"
+    ).pack(anchor="w", pady=(0, 4))
+
+    mode_var = tk.StringVar(value=getattr(self, "profile_mode", "persistent"))
+    ctk.CTkRadioButton(
+        form_frame,
+        text="Profile bền (khuyến nghị)",
+        variable=mode_var,
+        value="persistent",
+    ).pack(anchor="w", pady=2)
+    ctk.CTkRadioButton(
+        form_frame,
+        text="Profile mới mỗi lần chạy (dùng để test)",
+        variable=mode_var,
+        value="fresh",
+    ).pack(anchor="w", pady=2)
+
+    ctk.CTkLabel(
+        form_frame,
+        text=(
+            "Profile bền: giữ phiên đăng nhập, khởi động nhanh.\n"
+            "Profile mới: tạo từ storage/cookies/<uid>.json rồi xoá sau khi xong.\n"
+            "Cookie nguồn được Extension cập nhật tự động."
+        ),
+        justify="left",
+        anchor="w",
+        font=ctk.CTkFont(size=11),
+    ).pack(anchor="w", pady=(4, 12))
+
+    # Hàm xử lý khi bấm nút Lưu
+    def save_settings():
+        self.is_demo_mode = chk_demo_var.get()
+        self.profile_mode = mode_var.get()
+
+        try:
+            save_config(
+                BASE_DIR,
+                profile_mode=self.profile_mode,
+                demo_mode=self.is_demo_mode,
             )
-            groups_win.destroy()
+        except Exception as e:
+            messagebox.showerror("Lỗi", f"Không lưu được cấu hình: {e}")
+            return
 
-        btn_save = ttk.Button(toolbar, text="Xác nhận & Đóng", command=save_and_close)
-        btn_save.pack(side="right", padx=5)
+        status_text = "BẬT" if self.is_demo_mode else "TẮT"
+        messagebox.showinfo(
+            "Thông báo",
+            "Đã lưu cài đặt thành công!\n"
+            f"Demo Mode: {status_text}\n"
+            f"Profile: {self.profile_mode}",
+        )
+        settings_win.destroy()
 
-        # Nạp dữ liệu vừa đọc từ JSON lên Treeview hiển thị
+    def reset_profile():
+        uid = (getattr(self, "uid", "") or "").strip()
+        if not uid:
+            messagebox.showwarning(
+                "Thông báo", "Chưa nhận được UID từ Extension."
+            )
+            return
+
+        if not messagebox.askyesno(
+            "Xác nhận",
+            f"Tạo lại profile Chrome cho UID {uid}?\n\n"
+            "Profile cũ sẽ được đổi tên thành <uid>.bak-<thời gian> và giữ lại.\n"
+            "Cookie nguồn không bị xoá.",
+        ):
+            return
+
+        try:
+            backup = self.profile_manager.reset(uid)
+            detail = backup.name if backup else "không có profile cũ"
+            messagebox.showinfo(
+                "Hoàn tất", f"Đã tạo lại profile.\nBackup: {detail}"
+            )
+        except Exception as e:
+            messagebox.showerror("Lỗi", str(e))
+
+    # Nút điều khiển
+    action_frame = ctk.CTkFrame(settings_win, fg_color="transparent")
+    action_frame.pack(fill="x", padx=18, pady=(0, 18))
+
+    ctk.CTkButton(
+        action_frame, text="Tạo lại profile", command=reset_profile
+    ).pack(side="left", fill="x", expand=True, padx=(0, 6))
+
+    ctk.CTkButton(
+        action_frame, text="Lưu cấu hình", command=save_settings
+    ).pack(side="right", fill="x", expand=True, padx=(6, 0))
+
+  # =========================================================================
+
+  def __build_shared_panel(self):
+    """Xây dựng khu vực cấu hình thông tin tài khoản dùng chung phía trên (Đã thu gọn)"""
+    top_shared_frame = TitledFrame(
+        self, title=" Thông tin tài khoản hiện tại "
+    )
+    top_shared_frame.pack(side="top", fill="x", padx=10, pady=5)
+    body = top_shared_frame.body
+
+    # Định hình layout sử dụng grid để kiểm soát khoảng cách tốt hơn thay vì pack hỗn hợp
+    body.columnconfigure(1, weight=1)
+    body.columnconfigure(
+        3, weight=2
+    )  # Cho ô User Agent rộng hơn vì UA thường rất dài
+
+    # HÀNG 1: UID & USER AGENT
+    # --- Cụm UID ---
+    ctk.CTkLabel(body, text="UID:", width=40, anchor="w").grid(
+        row=0, column=0, sticky="w", pady=5
+    )
+    self.ent_uid_shared = ctk.CTkEntry(
+        body,
+        font=ctk.CTkFont(family="Arial", size=13, weight="bold"),
+        width=200,
+    )
+    self.ent_uid_shared.grid(row=0, column=1, sticky="w", pady=5, padx=(0, 20))
+    self.ent_uid_shared.insert(0, self.empty_uid)
+    self.ent_uid_shared.configure(state="disabled")
+
+    # --- Cụm User Agent ---
+    ctk.CTkLabel(body, text="User Agent:").grid(
+        row=0, column=2, sticky="w", padx=(10, 6), pady=5
+    )
+    self.ent_ua = ctk.CTkEntry(body)
+    self.ent_ua.grid(row=0, column=3, sticky="ew", pady=5)
+
+    # HÀNG 2: QUẢN LÝ GROUPS (Rút gọn thành hiển thị số lượng)
+    group_status_frame = ctk.CTkFrame(body, fg_color="transparent")
+    group_status_frame.grid(
+        row=1, column=0, columnspan=4, sticky="ew", pady=(8, 0)
+    )
+
+    # Biến lưu trữ số lượng group để cập nhật động lên giao diện
+    self.lbl_group_count_var = tk.StringVar(value="Đã quét: 0 groups")
+    lbl_count = ctk.CTkLabel(
+        group_status_frame,
+        textvariable=self.lbl_group_count_var,
+        font=ctk.CTkFont(size=12, slant="italic"),
+    )
+    lbl_count.pack(side="left", padx=(0, 15))
+
+    btn_show_groups = ctk.CTkButton(
+        group_status_frame,
+        text="Danh sách nhóm",
+        width=130,
+        command=self.open_groups_window,
+    )
+    btn_show_groups.pack(side="left")
+
+  def get_selected_groups(self):
+    """Trả về danh sách các object group đang được tích chọn"""
+    # Sử dụng getattr để lấy dữ liệu an toàn, mặc định là [] nếu chưa có attribute
+    groups = getattr(self, "groups_data", []) or []
+    return [g for g in groups if g.get("checked", False)]
+
+  def update_group_selection(self):
+    """Cập nhật UI số lượng nhóm đã chọn"""
+    groups = getattr(self, "groups_data", []) or []
+    selected_count = len(self.get_selected_groups())  # Tái sử dụng hàm trên
+    total_count = len(groups)
+
+    self.lbl_group_count_var.set(f"Đã chọn: {selected_count}/{total_count} nhóm")
+
+  def open_groups_window(self):
+    """Mở cửa sổ Popup quản lý và tích chọn danh sách nhóm"""
+    # ================= KHỞI TẠO CỬA SỔ POPUP =================
+    groups_win = ctk.CTkToplevel(self)
+    groups_win.title("Danh sách nhóm")
+    groups_win.geometry("580x520")
+    groups_win.grab_set()
+    groups_win.resizable(False, False)
+
+    # 1. TOOLBAR TẠO THAO TÁC CHÍNH (Top Bar)
+    toolbar = ctk.CTkFrame(groups_win, fg_color="transparent")
+    toolbar.pack(fill="x", padx=10, pady=(10, 5))
+
+    # 2. THANH TÌM KIẾM (Search Bar)
+    search_frame = ctk.CTkFrame(groups_win, fg_color="transparent")
+    search_frame.pack(fill="x", padx=10, pady=5)
+
+    # 3. NỘI DUNG BẢNG (Treeview Main)
+    main_content = ctk.CTkFrame(groups_win, fg_color="transparent")
+    main_content.pack(fill="both", expand=True, padx=10, pady=(5, 10))
+
+    # ================= XÂY DỰNG CONTROL =================
+    # --- Toolbar controls ---
+    btn_scan = ctk.CTkButton(toolbar, text="Quét", width=80, command=lambda: handle_scan())
+    btn_scan.pack(side="left", padx=(0, 10))
+
+    rad_var = tk.IntVar(value=-1)
+
+    rad_all = ctk.CTkRadioButton(
+        toolbar,
+        text="Chọn tất cả",
+        variable=rad_var,
+        value=1,
+        command=lambda: on_radio_changed(),
+    )
+    rad_all.pack(side="left", padx=5)
+
+    rad_none = ctk.CTkRadioButton(
+        toolbar,
+        text="Bỏ chọn tất cả",
+        variable=rad_var,
+        value=0,
+        command=lambda: on_radio_changed(),
+    )
+    rad_none.pack(side="left", padx=5)
+
+    btn_save = ctk.CTkButton(
+        toolbar, text="Xác nhận", width=90, command=lambda: save_and_close()
+    )
+    btn_save.pack(side="right")
+
+    # --- Search Bar controls ---
+    ctk.CTkLabel(search_frame, text="🔍 Tìm kiếm:").pack(
+        side="left", padx=(0, 5)
+    )
+    search_var = tk.StringVar()
+    ent_search = ctk.CTkEntry(search_frame, textvariable=search_var)
+    ent_search.pack(side="left", fill="x", expand=True, padx=(0, 5))
+
+    btn_clear_search = ctk.CTkButton(
+        search_frame,
+        text="✕",
+        width=40,
+        command=lambda: search_var.set(""),
+    )
+    btn_clear_search.pack(side="right")
+
+    # --- Treeview controls ---
+    tree_groups = ttk.Treeview(
+      main_content,
+      columns=("Select", "Name"),
+      show="headings",
+      selectmode="browse",  # Chuyển thành "browse" để bật Highlight dòng khi click
+    )
+
+    scrollbar = ctk.CTkScrollbar(
+        main_content, orientation="vertical", command=tree_groups.yview
+    )
+    tree_groups.configure(yscrollcommand=scrollbar.set)
+
+    tree_groups.heading("Select", text="Chọn")
+    tree_groups.heading("Name", text="Tên nhóm")
+
+    tree_groups.column("Select", width=60, anchor="center")
+    tree_groups.column("Name", width=440, anchor="w")
+
+    tree_groups.pack(side="left", fill="both", expand=True)
+    scrollbar.pack(side="right", fill="y")
+
+    # ================= LOGIC VÀ XỬ LÝ SỰ KIỆN =================
+    def refresh_tree(*args):
+        """Làm mới dữ liệu hiển thị trên Treeview theo từ khóa tìm kiếm"""
+        tree_groups.delete(*tree_groups.get_children())
+        query = search_var.get().strip().lower()
+
+        for idx, g in enumerate(self.groups_data):
+            name = g.get("name", "")
+            # Lọc theo từ khóa tìm kiếm
+            if query and query not in name.lower():
+                continue
+
+            # Chuẩn hóa biểu tượng Checkbox gọn gàng
+            status = "☑" if g.get("checked", False) else "☐"
+            # Lưu chỉ số thật (idx) vào iid để không bị lệch dữ liệu khi filter
+            tree_groups.insert(
+                "", "end", iid=str(idx), values=(status, name)
+            )
+
+        update_radio_selection_state()
+
+    def toggle_item(item_id):
+      if item_id:
+          idx = int(item_id)
+          # 1. Đảo trạng thái trong dữ liệu gốc
+          self.groups_data[idx]["checked"] = not self.groups_data[idx]["checked"]
+
+          # 2. Cập nhật trực tiếp giao diện dòng này (giữ nguyên trạng thái Highlight)
+          status = "☑" if self.groups_data[idx]["checked"] else "☐"
+          name = self.groups_data[idx].get("name", "")
+          tree_groups.item(item_id, values=(status, name))
+
+          # 3. Kích hoạt Highlight dòng vừa click
+          tree_groups.selection_set(item_id)
+
+          # 4. Cập nhật lại nút 'Chọn tất cả / Bỏ chọn'
+          update_radio_selection_state()
+
+    def on_tree_click(event):
+        """Click vào cột 'Chọn' để bật/tắt checkbox"""
+        item_id = tree_groups.identify_row(event.y)
+        column = tree_groups.identify_column(event.x)
+        if item_id and column == "#1":
+            toggle_item(item_id)
+
+    def on_tree_double_click(event):
+        """Double click vào bất kỳ dòng nào để bật/tắt checkbox"""
+        item_id = tree_groups.identify_row(event.y)
+        if item_id:
+            toggle_item(item_id)
+
+    def on_radio_changed():
+        """Chọn/Bỏ chọn tất cả các nhóm đang được lọc hiển thị"""
+        val = rad_var.get()
+        query = search_var.get().strip().lower()
+
+        for g in self.groups_data:
+            # Nếu đang search, chỉ tác động lên các nhóm khớp tìm kiếm
+            if not query or query in g.get("name", "").lower():
+                g["checked"] = val == 1
+
         refresh_tree()
 
-    def _build_navigation_tabs(self, num_tabs):
-        """Xây dựng khu vực Notebook và nhúng các màn hình tính năng vào"""
-        self.notebook = ttk.Notebook(self)
-        self.notebook.pack(fill="both", expand=True, padx=5, pady=5)
+    def update_radio_selection_state():
+        """Cập nhật trạng thái hiển thị của nút Chọn tất cả / Bỏ chọn"""
+        if not self.groups_data:
+            rad_var.set(-1)
+            return
 
-        tab_configs = [
-            ("Share bài", DevelopScreen),
-            ("Đăng bài", PostScreen),
-            ("Bắn SMS", SmsScreen),
+        all_checked = all(g.get("checked", False) for g in self.groups_data)
+        all_unchecked = all(
+            not g.get("checked", False) for g in self.groups_data
+        )
+
+        if all_checked:
+            rad_var.set(1)
+        elif all_unchecked:
+            rad_var.set(0)
+        else:
+            rad_var.set(-1)
+
+    def handle_scan():
+        if not self.has_uid:
+            messagebox.showwarning(
+                "Cảnh báo", "Vui lòng kết nối Extension để nhận UID trước khi quét!"
+            )
+            return
+
+        btn_scan.configure(state="disabled", text="Đang quét...")
+
+        def local_refresh():
+            if not groups_win.winfo_exists():
+                return
+            refresh_tree()
+            self.lbl_group_count_var.set(
+                f"Đã quét: {len(self.groups_data)} groups"
+            )
+            btn_scan.configure(state="normal", text="Quét")
+            messagebox.showinfo(
+                "Thành công",
+                f"Đã cập nhật {len(self.groups_data)} nhóm thành công!",
+            )
+
+        def reset_scan_button():
+            if groups_win.winfo_exists():
+                btn_scan.configure(state="normal", text="Quét")
+
+        self._trigger_ui_refresh = local_refresh
+        self._reset_group_scan_button = reset_scan_button
+        self.scan_groups()
+
+    def save_and_close():
+        self.screens["Quét UID"].refresh_groups_preview()
+        self.update_group_selection()
+        groups_win.destroy()
+
+    # Bắt sự kiện thay đổi trên ô tìm kiếm
+    search_var.trace_add("write", refresh_tree)
+
+    # Gán sự kiện tương tác chuột cho Treeview
+    tree_groups.bind("<ButtonRelease-1>", on_tree_click)
+    tree_groups.bind("<Double-1>", on_tree_double_click)
+
+    # Khởi chạy ban đầu
+    refresh_tree()
+
+  def __build_navigation_tabs(self):
+    """Xây dựng khu vực Notebook và nhúng các màn hình tính năng vào"""
+    self.notebook = ctk.CTkTabview(self, command=self.on_tab_changed)
+    self.notebook.pack(fill="both", expand=True, padx=5, pady=5)
+
+    tab_configs = [
+        ("Share bài", DevelopScreen),
+        ("Đăng bài", PostScreen),
+        ("Bắn SMS", SmsScreen),
+        ("Quét UID", UidScanScreen),
+        ("Quét bài", PostScanScreen),
+        ("Quét bình luận", CommentScanScreen),
+        ("Quét reaction", ReactionScanScreen),
+    ]
+
+    self.tabs = []
+    self.screens = {}
+
+    for label, screen_cls in tab_configs:
+      tab = self.notebook.add(label)
+      screen = screen_cls(tab, self)
+
+      self.tabs.append(tab)
+      self.screens[label] = screen
+
+  def on_tab_changed(self):
+    """Làm mới preview khi chuyển sang tab Quét UID / Quét bài."""
+    # CTkTabview có thể gọi command ngay trong lúc khởi tạo, khi các thuộc tính
+    # này chưa sẵn sàng -> bỏ qua an toàn.
+    if not hasattr(self, "notebook") or not hasattr(self, "screens"):
+      return
+
+    tab_title = self.notebook.get()
+    if tab_title in ("Quét UID", "Quét bài"):
+      screen = self.screens.get(tab_title)
+      if screen is not None:
+        screen.refresh_groups_preview()
+
+  # ================= CÁC HÀM XỬ LÝ LOGIC =================
+  def save_to_profile_folder(self, uid: str, cookies: list):
+    """Lưu cookie vào kho nguồn storage/cookies/<uid>.json.
+
+    Profile Chrome sẽ được seed từ đây mỗi lần mở (xem bot.start_browser).
+    """
+    try:
+      path = CookieStore(BASE_DIR).save(uid, cookies)
+      print(f"[Cookie] Đã lưu cookie nguồn: {path}")
+    except ValueError:
+      print(f"[Cookie] Bỏ qua UID không hợp lệ: {uid!r}")
+    except Exception as e:
+      print(f"[Cookie] Không ghi được cookie cho {uid}: {e}")
+
+  def _update_ui_after_scan(self):
+    self.lbl_group_count_var.set(f"Đã quét: {len(self.groups_data)} groups")
+    if hasattr(self, "popup_refresh_func") and self.popup_refresh_func:
+      self.popup_refresh_func()
+
+  def on_server_received(self, data: dict):
+    """Nhận dữ liệu từ HTTP server mà không thao tác Tkinter ở server thread."""
+    self._server_events.put(data)
+
+  def _process_server_events(self):
+    """Xử lý dữ liệu server trên main thread của Tkinter."""
+    if self._closing:
+      return
+
+    try:
+      while True:
+        self._apply_server_received(self._server_events.get_nowait())
+    except Empty:
+      pass
+
+    if not self._closing and self.winfo_exists():
+      self.after(100, self._process_server_events)
+
+  def _apply_server_received(self, data: dict):
+    uid = str(data.get("uid", "") or "").strip()
+    if not uid.isdigit():
+      print(f"[Server] Bỏ qua payload có UID không hợp lệ: {uid!r}")
+      return
+
+    self.uid = uid
+    self.cookies = data.get("cookies", []) or []
+    self.user_agent = data.get("user_agent", "") or ""
+
+    self.ent_uid_shared.configure(state="normal")
+    self.ent_uid_shared.delete(0, tk.END)
+    self.ent_uid_shared.insert(0, self.uid)
+    self.ent_uid_shared.configure(state="disabled")
+
+    self.ent_ua.delete(0, tk.END)
+    self.ent_ua.insert(0, self.user_agent)
+
+    # Cập nhật lại danh sách nhóm từ file JSON nếu có
+    self.groups_data = self.load_data()
+    self.update_group_selection()
+
+    if self.uid:
+        self.has_uid = True
+        self.save_to_profile_folder(self.uid, self.cookies)
+
+    self.screens["Quét UID"].refresh_groups_preview()
+
+  def scan_groups(self):
+    uid = self.ent_uid_shared.get()
+
+    selenium_thread = threading.Thread(
+        target=self.run_scan_groups, args=(uid,), daemon=True
+    )
+    selenium_thread.start()
+
+  def run_scan_groups(self, user) -> None:
+    worker = None
+    try:
+        worker = bot.FacebookBot(visualize=self.is_demo_mode)
+        self._group_scan_bot = worker
+
+        success = worker.start_browser(
+            uid=user, user_agent=self.user_agent
+        )
+        if not success:
+          error_message = worker.get_start_error_message()
+          self.after(0, lambda msg=error_message: messagebox.showerror("Lỗi", msg))
+          return
+
+        results = worker.scrape_joined_groups()
+
+        # 1. Chuyển đổi dữ liệu bằng List Comprehension
+        self.groups_data = [
+            {
+                "id": g.get("group_id", ""),
+                "name": g.get("group_name", ""),
+                "checked": False,
+            }
+            for g in (results or [])
         ]
 
-        self.tabs = []
-        self.screens = {}
+        # 2. Tái sử dụng hàm lưu file JSON đã viết trước đó
+        self.save_data()
+        print("Hoàn thành cào dữ liệu ngầm và lưu JSON thành công!")
 
-        for label, screen_cls in tab_configs:
-            tab = ttk.Frame(self.notebook)
-            self.notebook.add(tab, text=label)
+        # 3. Cập nhật lại giao diện ở main thread
+        if callable(getattr(self, "_trigger_ui_refresh", None)):
+            self.after(0, self._trigger_ui_refresh)
 
-            screen = screen_cls(tab, self)
+    except Exception as e:
+        msg = f"Có lỗi xảy ra: {e}"
+        self.after(0, lambda: messagebox.showerror("Lỗi Tiến Trình", msg))
 
-            self.tabs.append(tab)
-            self.screens[label] = screen
+    finally:
+        if worker:
+            worker.close()
+        self._group_scan_bot = None
+        reset_scan_button = getattr(self, "_reset_group_scan_button", None)
+        if callable(reset_scan_button):
+            self.after(0, reset_scan_button)
 
-    def _build_log_panel(self):
-        """Xây dựng ô hiển thị log hệ thống ở dưới cùng"""
-        log_frame = ttk.LabelFrame(self, text=" Nhật ký hoạt động ", padding=5)
-        # Đặt side="bottom", fill="x" và tắt expand để cố định form log ở đáy app
-        log_frame.pack(side="bottom", fill="x", expand=False, padx=10, pady=5)
-
-        # Giới hạn chiều cao cố định (height=8 dòng)
-        self.txt_log = tk.Text(log_frame, height=8, width=50, bg="#f8f9fa")
-        self.txt_log.pack(expand=True, fill=tk.BOTH)
-
-    # ================= CÁC HÀM XỬ LÝ LOGIC =================
-    def _update_ui_after_scan(self):
-        """Hàm này chạy trên Luồng chính (Main Thread) nên an toàn 100%"""
-        # 1. Cập nhật số lượng hiển thị ở trang chủ
-        self.lbl_group_count_var.set(f"Đã quét: {len(self.groups_data)} groups")
-        
-        # 2. Nếu cửa sổ popup đang mở, gọi hàm refresh_tree() của popup đó
-        # (Bạn có thể lưu biến reference của popup hoặc dùng callback để reload bảng)
-        if hasattr(self, 'popup_refresh_func') and self.popup_refresh_func:
-            self.popup_refresh_func()
-        
-    def log_to_interface(self, message):
-        """Hàm nhận log từ server và chèn vào giao diện an toàn"""
-        self.after(0, self._safe_append_log, message)
-
-    def _safe_append_log(self, message):
-        self.txt_log.insert(tk.END, f"{message}\n")
-        self.txt_log.see(tk.END)  # Tự động cuộn xuống dòng mới nhất
-
-    def on_server_received(self, data: dict):
-        """Callback xử lý khi nhận được dữ liệu từ Extension qua Local Server"""
-        self.uid = data.get('uid', '')
-        self.cookies = data.get('cookies', [])
-        self.user_agent = data.get('user_agent', '')
-
-        # Cập nhật thông tin lên UI
-        self.ent_uid_shared.delete(0, tk.END)
-        self.ent_uid_shared.insert(0, self.uid)
-
-        self.ent_ua.delete(0, tk.END)
-        self.ent_ua.insert(0, self.user_agent)
-
-    def scan_groups(self):
-        uid = self.ent_uid_shared.get()
-        
-        # Tiến trình con sẽ tắt khi tiến trình cha bị hủy (daemon = True)
-        selenium_thread = threading.Thread(
-            target=self.run_scan_groups, 
-            args=(uid,), 
-            daemon=True
-        )
-        selenium_thread.start()
-
-    def run_scan_groups(self, user) -> None:       
-        try:
-            worker = bot.FacebookBot()
-            worker.login_with_cookies(user, self.cookies)
-            results = worker.scrape_joined_groups() # Giả sử trả về list dict
-
-            # 1. CẬP NHẬT TRỰC TIẾP VÀO BIẾN CỦA APP
-            self.groups_data = []
-            for group in results:
-                self.groups_data.append({
-                    "id": group.get("group_id", ""),
-                    "name": group.get("group_name", ""),
-                    "checked": False
-                })
-
-            # 2. LƯU DỮ LIỆU THÀNH FILE JSON THEO ĐỊNH DẠNG YÊU CẦU
-            file_path = "groups_saved.json"
-            
-            # Tạo cấu trúc data mới dựa trên format: [{ user: { "groups": [...] } }]
-            new_data_entry = {
-                user: {
-                    "groups": self.groups_data
-                }
-            }
-
-            # Đọc dữ liệu cũ nếu file đã tồn tại để tránh ghi đè mất dữ liệu của UID khác
-            full_json_data = []
-            if os.path.exists(file_path):
-                try:
-                    with open(file_path, "r", encoding="utf-8") as f:
-                        full_json_data = json.load(f)
-                        if not isinstance(full_json_data, list):
-                            full_json_data = []
-                except Exception:
-                    full_json_data = [] # Nếu file lỗi/trống thì reset thành list rỗng
-
-            # Cập nhật hoặc thêm mới: Nếu UID này đã tồn tại trong file thì ghi đè, chưa có thì append
-            updated = False
-            for item in full_json_data:
-                if user in item:
-                    item[user]["groups"] = self.groups_data
-                    updated = True
-                    break
-            
-            if not updated:
-                full_json_data.append(new_data_entry)
-
-            # Tiến hành ghi vào file JSON
-            with open(file_path, "w", encoding="utf-8") as f:
-                json.dump(full_json_data, f, ensure_ascii=False, indent=4)
-
-            print("Hoàn thành cào dữ liệu ngầm và lưu JSON thành công!")
-
-            # 3. GỌI LỆNH CẬP NHẬT GIAO DIỆN (Đẩy về Main Thread an toàn)
-            if hasattr(self, '_trigger_ui_refresh') and self._trigger_ui_refresh:
-                self.after(0, self._trigger_ui_refresh)      
-                
-        except Exception as e:
-            msg = f"Có lỗi xảy ra: {e}"
-            self.after(0, lambda: messagebox.showerror("Lỗi Tiến Trình", msg))
-        finally:
-            # Bọc try-except cho worker.close() đề phòng worker khởi tạo lỗi (None)
-            if 'worker' in locals():
-                worker.close()
 
 if __name__ == "__main__":
-    app = App()
-    app.mainloop()
+  app = App()
+  app.mainloop()

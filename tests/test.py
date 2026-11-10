@@ -1,10 +1,11 @@
+import random as rand
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from concurrent.futures import ThreadPoolExecutor
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, NoSuchElementException, ElementClickInterceptedException
+from selenium.common.exceptions import TimeoutException, NoSuchElementException, ElementClickInterceptedException, StaleElementReferenceException
 from openpyxl import Workbook
 try:
     from bs4 import BeautifulSoup
@@ -17,11 +18,62 @@ import time
 import pickle
 import os
 import re
+import json
+import uuid
+import sys
+import urllib.parse
+import requests
 
-group_id = '3636784079935693'
+group_id = '2396395143940094'
 urls = [
     f'https://www.facebook.com/groups/{group_id}'
 ]
+
+user_id = 61573394223842
+doc_id = 27114388448203693
+request_name = "GroupsCometMembersPageNewMembersSectionRefetchQuery"
+
+payload = {
+    "av": user_id,
+    "__user": "61573394223842",
+    "fb_dtsg": "",
+    "doc_id": doc_id
+}
+
+
+def parse_graphql_text(text):
+    """Parse JSON GraphQL; fallback cho BOM và NDJSON nhiều object."""
+    clean = (text or "").lstrip("\ufeff").strip()
+    try:
+        return json.loads(clean), "json"
+    except json.JSONDecodeError as first_error:
+        lines = [line.strip() for line in clean.splitlines() if line.strip()]
+        if len(lines) > 1:
+            objects = []
+            for line in lines:
+                try:
+                    objects.append(json.loads(line))
+                except json.JSONDecodeError:
+                    objects = []
+                    break
+            if objects:
+                merged = {"data": {"serpResponse": {"results": {"edges": []}}}}
+                for obj in objects:
+                    results = (
+                        ((obj.get("data") or {}).get("serpResponse") or {}).get("results")
+                        if isinstance(obj, dict)
+                        else None
+                    )
+                    if isinstance(results, dict):
+                        edges = results.get("edges")
+                        if isinstance(edges, list):
+                            merged["data"]["serpResponse"]["results"]["edges"].extend(edges)
+                        if results.get("page_info"):
+                            merged["data"]["serpResponse"]["results"]["page_info"] = results["page_info"]
+                    if isinstance(obj, dict) and obj.get("extensions"):
+                        merged["extensions"] = obj["extensions"]
+                return merged, "ndjson"
+        raise first_error
 
 class FacebookBot:
     def __init__(self, email, password):
@@ -31,7 +83,378 @@ class FacebookBot:
         self.driver = None
         self.cookie_file = "fb_cookies.pkl"
 
-        self.init_driver(False)
+        self.init_driver(False)  # False để không tối ưu hóa, hiển thị trình duyệt
+
+    # -------------------------
+    # Lấy thông tin các thành viên mới trong nhóm bằng GraphQL API
+    # -------------------------
+    def log_raw_response(self, res_data: dict, filename: str = "data.json"):
+            """
+            Ghi bổ sung raw response của từng request vào file data.json dạng Mảng (Array).
+            """
+            responses = []
+            
+            # Nạp dữ liệu cũ từ file data.json nếu file đã tồn tại
+            if os.path.exists(filename) and os.path.getsize(filename) > 0:
+                try:
+                    with open(filename, "r", encoding="utf-8") as f:
+                        responses = json.load(f)
+                except json.JSONDecodeError:
+                    responses = []
+    
+            # Thêm response mới nhất vào danh sách
+            responses.append(res_data)
+    
+            # Ghi đè lại file data.json với định dạng đẹp dễ đọc (indent=4)
+            with open(filename, "w", encoding="utf-8") as f:
+                json.dump(responses, f, ensure_ascii=False, indent=4)
+
+    def fetch_group_members(self, group_id: str, cursor: str = None, count: int = 30) -> dict:
+        """
+        Thực thi GraphQL request với cơ chế Timeout và Fallback lấy Token an toàn.
+        """
+        js_script = """
+            const done = arguments[arguments.length - 1];
+            const groupId = arguments[0];
+            const cursor = arguments[1];
+            const count = arguments[2];
+
+            // 1. Giới hạn thời gian chờ tối đa 10 giây cho request JS
+            const timeoutId = setTimeout(() => {
+                done({ error: "JS_FETCH_TIMEOUT" });
+            }, 10000);
+
+            // 2. Lấy fb_dtsg token (có fallback qua Cookie)
+            let dtsgToken = "";
+            try {
+                dtsgToken = require('DTSGInitialData').token || require('DTSGInitData').token;
+            } catch(e) {
+                const match = document.cookie.match(/fb_dtsg=([^;]+)/);
+                if (match) dtsgToken = decodeURIComponent(match[1]);
+            }
+
+            // 3. Lấy User ID (có fallback qua Cookie c_user)
+            let userId = "";
+            try {
+                userId = require('CurrentUserInitialData').USER_ID || "";
+            } catch(e) {
+                const match = document.cookie.match(/c_user=([0-9]+)/);
+                if (match) userId = match[1];
+            }
+
+            if (!dtsgToken || !userId) {
+                clearTimeout(timeoutId);
+                return done({ error: "MISSING_AUTH_TOKENS" });
+            }
+
+            const payload = new URLSearchParams({
+                'av': userId,
+                '__user': userId,
+                'fb_dtsg': dtsgToken,
+                'fb_api_req_friendly_name': 'GroupsCometMembersPageNewMembersSectionRefetchQuery',
+                'doc_id': '27114388448203693',
+                'variables': JSON.stringify({
+                    'count': count,
+                    'cursor': cursor ? cursor : null,
+                    'groupID': groupId,
+                    'recruitingGroupFilterNonCompliant': false,
+                    'scale': 1,
+                    'id': groupId
+                }),
+                '__a': '1',
+                '__comet_req': '15'
+            });
+
+            fetch('https://www.facebook.com/api/graphql/', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: payload.toString(),
+                credentials: 'include'
+            })
+            .then(res => res.json())
+            .then(data => {
+                clearTimeout(timeoutId);
+                done(data);
+            })
+            .catch(err => {
+                clearTimeout(timeoutId);
+                done({ error: err.toString() });
+            });
+        """
+        return self.driver.execute_async_script(js_script, str(group_id), cursor, count)
+
+    def fetch_search_posts_raw(
+        self,
+        keyword: str,
+        cursor: str = None,
+        count: int = 10,
+        doc_id: str = "39411546341825607",
+        friendly_name: str = "SearchCometResultsPaginatedResultsQuery",
+    ) -> dict:
+        """Gọi GraphQL Search và trả về raw text để test tay."""
+        variables = {
+            "allow_streaming": False,
+            "args": {
+                "callsite": "COMET_GLOBAL_SEARCH",
+                "config": {
+                    "exact_match": False,
+                    "high_confidence_config": None,
+                    "intercept_config": None,
+                    "sts_disambiguation": None,
+                    "watch_config": None,
+                },
+                "context": {"bsid": str(uuid.uuid4()), "tsid": None},
+                "experience": {
+                    "client_defined_experiences": ["ADS_PARALLEL_FETCH"],
+                    "encoded_server_defined_params": None,
+                    "fbid": None,
+                    "type": "GLOBAL_SEARCH",
+                },
+                "filters": [],
+                "text": str(keyword or ""),
+            },
+            "count": int(count),
+            "cursor": cursor,
+            "feedLocation": "SEARCH",
+            "feedbackSource": 23,
+            "fetch_filters": True,
+            "focusCommentID": None,
+            "locale": None,
+            "privacySelectorRenderLocation": "COMET_STREAM",
+            "referringStoryRenderLocation": None,
+            "renderLocation": "search_results_page",
+            "scale": 1,
+            "stream_initial_count": 0,
+            "useDefaultActor": False,
+            "__relay_internal__pv__GHLShouldChangeAdIdFieldNamerelayprovider": True,
+            "__relay_internal__pv__GHLShouldChangeSponsoredDataFieldNamerelayprovider": True,
+            "__relay_internal__pv__CometFeedStory_enable_reactor_facepilerelayprovider": False,
+            "__relay_internal__pv__CometFeedStory_enable_social_bubblesrelayprovider": False,
+            "__relay_internal__pv__CometFeedStory_enable_post_permalink_white_space_clickrelayprovider": False,
+            "__relay_internal__pv__CometUFICommentActionLinksRewriteEnabledrelayprovider": True,
+            "__relay_internal__pv__CometUFICommentAvatarStickerAnimatedImagerelayprovider": False,
+            "__relay_internal__pv__IsWorkUserrelayprovider": False,
+            "__relay_internal__pv__TestPilotShouldIncludeDemoAdUseCaserelayprovider": False,
+            "__relay_internal__pv__FBReels_deprecate_short_form_video_context_gkrelayprovider": True,
+            "__relay_internal__pv__CometUFI_dedicated_comment_routable_dialog_gkrelayprovider": True,
+            "__relay_internal__pv__FBReels_enable_view_dubbed_audio_type_gkrelayprovider": True,
+            "__relay_internal__pv__CometFeedShareMedia_shouldPrefetchShareImagerelayprovider": True,
+            "__relay_internal__pv__CometImmersivePhotoCanUserDisable3DMotionrelayprovider": False,
+            "__relay_internal__pv__WorkCometIsEmployeeGKProviderrelayprovider": False,
+            "__relay_internal__pv__IsMergQAPollsrelayprovider": False,
+            "__relay_internal__pv__FBReelsMediaFooter_comet_enable_reels_ads_gkrelayprovider": True,
+            "__relay_internal__pv__CometUFIReactionsEnableShortNamerelayprovider": False,
+            "__relay_internal__pv__CometUFICommentAutoTranslationTyperelayprovider": "AUTO_TRANSLATE",
+            "__relay_internal__pv__CometUFIShareActionMigrationrelayprovider": True,
+            "__relay_internal__pv__CometUFISingleLineUFIrelayprovider": True,
+            "__relay_internal__pv__relay_provider_comet_ufi_ssr_seo_deferrelayprovider": True,
+            "__relay_internal__pv__FBReelsIFUTileContent_reelsIFUPlayOnHoverrelayprovider": True,
+            "__relay_internal__pv__GroupsCometGYSJFeedItemHeightrelayprovider": 206,
+            "__relay_internal__pv__StoriesShouldEnablePhotosensitiveContentWarningrelayprovider": False,
+            "__relay_internal__pv__ShouldEnableBakedInTextStoriesrelayprovider": False,
+            "__relay_internal__pv__StoriesShouldIncludeFbNotesrelayprovider": True,
+        }
+
+        js_script = """
+            const done = arguments[arguments.length - 1];
+            const variablesJson = arguments[0];
+            const docId = arguments[1];
+            const friendlyName = arguments[2];
+
+            try {
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => {
+                    controller.abort();
+                    done({ error: "JS_FETCH_TIMEOUT" });
+                }, 15000);
+
+                let dtsgToken = "", userId = "", lsdToken = "";
+                try { dtsgToken = (window.require && require('DTSGInitialData').token) || ""; } catch(e){}
+                try { userId = (window.require && require('CurrentUserInitialData').USER_ID) || ""; } catch(e){}
+                try { lsdToken = (window.require && require('LSD').token) || ""; } catch(e){}
+
+                if (!dtsgToken) {
+                    const m = document.cookie.match(/fb_dtsg=([^;]+)/);
+                    if (m) dtsgToken = decodeURIComponent(m[1]);
+                }
+                if (!userId) {
+                    const m = document.cookie.match(/c_user=([0-9]+)/);
+                    if (m) userId = m[1];
+                }
+                if (!dtsgToken || !userId) {
+                    clearTimeout(timeoutId);
+                    return done({ error: "MISSING_AUTH_TOKENS" });
+                }
+
+                let sum = 0;
+                for (let i = 0; i < dtsgToken.length; i++) sum += dtsgToken.charCodeAt(i);
+                const jazoest = '2' + sum;
+
+                let rev = "", spinT = "";
+                try { rev = (window.SiteData && window.SiteData.client_revision) || ""; } catch(e){}
+                try { spinT = (window.Env && window.Env.start_time) || ""; } catch(e){}
+
+                const payloadMap = {
+                    'av': userId,
+                    '__user': userId,
+                    'fb_dtsg': dtsgToken,
+                    'jazoest': jazoest,
+                    'lsd': lsdToken,
+                    'fb_api_caller_class': 'RelayModern',
+                    'fb_api_req_friendly_name': friendlyName,
+                    'server_timestamps': 'true',
+                    'doc_id': docId,
+                    'variables': variablesJson,
+                    '__a': '1',
+                    '__comet_req': '15'
+                };
+                if (rev) payloadMap['__rev'] = rev;
+                if (spinT) payloadMap['__spin_t'] = spinT;
+
+                fetch('https://www.facebook.com/api/graphql/', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                        'X-Asbd-Id': '359341',
+                        'X-Fb-Friendly-Name': friendlyName,
+                        'X-Fb-Lsd': lsdToken
+                    },
+                    body: new URLSearchParams(payloadMap).toString(),
+                    credentials: 'include',
+                    signal: controller.signal
+                })
+                .then(async res => {
+                    clearTimeout(timeoutId);
+                    const text = await res.text();
+                    done({
+                        status: res.status,
+                        content_type: res.headers.get('content-type') || '',
+                        text: text
+                    });
+                })
+                .catch(err => {
+                    clearTimeout(timeoutId);
+                    if (err.name === 'AbortError') return;
+                    done({ error: err.toString() });
+                });
+            } catch(topErr) {
+                done({ error: "CRITICAL_JS_ERROR: " + topErr.toString() });
+            }
+        """
+        return self.driver.execute_async_script(
+            js_script,
+            json.dumps(variables, ensure_ascii=False),
+            str(doc_id),
+            str(friendly_name),
+        )
+
+    def fetch_search_posts(self, keyword: str, cursor: str = None, count: int = 10) -> dict:
+        """Parse raw response; nếu lỗi trả kèm raw để lưu ra file."""
+        raw = self.fetch_search_posts_raw(keyword, cursor=cursor, count=count)
+        if not isinstance(raw, dict):
+            return {"error": "INVALID_RESPONSE", "raw": raw}
+        if raw.get("error"):
+            return raw
+        try:
+            payload, parse_mode = parse_graphql_text(raw.get("text") or "")
+        except Exception as error:
+            return {
+                "error": "INVALID_JSON_RESPONSE",
+                "parse_error": str(error),
+                "status": raw.get("status"),
+                "content_type": raw.get("content_type"),
+                "raw": raw.get("text") or "",
+            }
+        payload["_parse_mode"] = parse_mode
+        payload["_status"] = raw.get("status")
+        payload["_content_type"] = raw.get("content_type")
+        return payload
+
+    def scrape_group_members(self, group_id: str, max_members: int = 5000, batch_size: int = 10, start_cursor=None) -> list:
+            """
+            Cào danh sách thành viên nhóm và tự động dừng khi đạt đủ max_members UID.
+            """
+            collected_uids = set()      # Dùng set để lọc trùng UID tự động
+            all_members_data = []       # Chứa thông tin chi tiết
+            
+            cursor = start_cursor
+            has_next_page = True
+            request_index = 1
+
+            # Cờ kiểm tra cào không giới hạn
+            unlimited = max_members <= 0
+            limit_text = "TẤT CẢ" if unlimited else f"{max_members}"
+
+            # Mở file ghi stream sẵn
+            with open("members_cleaned.jsonl", "a", encoding="utf-8") as f_out:
+                # Vòng lặp chạy khi còn trang tiếp theo VÀ (đang cào không giới hạn HOẶC chưa đủ max_members)
+                while has_next_page and (unlimited or len(collected_uids) < max_members):
+                    print(f"[*] Request #{request_index} | Đã cào: {len(collected_uids)}/{limit_text} UIDs (Cursor: {cursor})...")
+                    
+                    # 1. Gọi GraphQL Request
+                    raw_res = self.fetch_group_members(group_id, cursor=cursor, count=batch_size)
+                    
+                    # Ghi log raw response ra data.json
+                    self.log_raw_response(raw_res, filename="data.json")
+
+                    # 2. Kiểm tra lỗi
+                    if "error" in raw_res or "data" not in raw_res:
+                        print(f"[!] Dừng do lỗi API hoặc hết Session: {raw_res.get('error')}")
+                        break
+
+                    node = raw_res.get("data", {}).get("node", {}).get("new_members", {})
+                    edges = node.get("edges", [])
+
+                    if not edges:
+                        print("[!] Nhóm không còn thành viên nào mới để tải.")
+                        break
+
+                    # 3. Trích xuất và kiểm tra UID
+                    for edge in edges:
+                        m = edge.get("node", {})
+                        uid = m.get("id")
+
+                        if uid and uid not in collected_uids:
+                            collected_uids.add(uid)
+                            
+                            member_info = {
+                                "id": uid,
+                                "name": m.get("name"),
+                                "url": m.get("url"),
+                                "avatar": m.get("profile_picture", {}).get("uri")
+                            }
+                            all_members_data.append(member_info)
+
+                            # Ghi trực tiếp từng dòng vào file jsonl
+                            f_out.write(json.dumps(member_info, ensure_ascii=False) + "\n")
+
+                            # Kiểm tra dừng nếu có đặt giới hạn cụ thể
+                            if not unlimited and len(collected_uids) >= max_members:
+                                break
+
+                    # 4. ĐIỀU KIỆN DỪNG: Đã đạt đủ số lượng UID yêu cầu (chỉ áp dụng khi không 'unlimited')
+                    if not unlimited and len(collected_uids) >= max_members:
+                        print(f"\n[THÀNH CÔNG] Đã thu thập đủ mục tiêu {max_members} UIDs!")
+                        break
+
+                    # 5. Lấy cursor cho request kế tiếp
+                    page_info = node.get("page_info", {})
+                    has_next_page = page_info.get("has_next_page", False)
+                    cursor = page_info.get("end_cursor")
+
+                    if not cursor:
+                        print("[!] Đã duyệt đến cuối danh sách nhóm.")
+                        break
+
+                    request_index += 1
+                    time.sleep(rand.uniform(1.5, 2.5))  # Delay
+
+            if unlimited:
+                print(f"\n[HOÀN THÀNH] Đã cào TẤT CẢ {len(collected_uids)} UIDs trong nhóm!")
+
+            return all_members_data
+
+    # END
 
     def init_driver(self, optimized):
         options = webdriver.ChromeOptions()
@@ -40,12 +463,13 @@ class FacebookBot:
             options.add_argument("--disable-gpu")
             options.add_argument("--no-sandbox")
 
-        prefs = {
-            "profile.managed_default_content_settings.images": 2
-        }
+            prefs = {
+                "profile.managed_default_content_settings.images": 2
+            }
+            options.add_experimental_option("prefs", prefs)     
+            options.page_load_strategy = "eager"
 
-        #options.add_experimental_option("prefs", prefs)     
-        #options.page_load_strategy = "eager"
+        
         options.add_argument("--disable-notifications")
 
         driver = webdriver.Chrome(options=options)
@@ -228,34 +652,91 @@ class FacebookBot:
         username = link.replace("https://www.facebook.com/", "").strip("/")
         return username if username else None
 
-    def collect_members(self, max_scroll=50):
+    def get_fb_dtsg(self):
+        """Extracts the fb_dtsg token from an active, logged-in Facebook session."""
+        
+        # Method 1: Execute JavaScript directly in the page context
+        js_scripts = [
+            "return require('DTSGInitialData').token;"
+            "return require('DTSGInitData').token;"
+        ]
+        
+        for script in js_scripts:
+            try:
+                token = self.driver.execute_script(script)
+                if token:
+                    return token
+            except Exception:
+                continue
+
+        # Method 2: Fallback to parsing page source with Regex
+        page_source = self.driver.page_source
+        
+        # Match standard DTSGInitialData pattern
+        match = re.search(r'"DTSGInitialData":\[\],"token":"([^"]+)"', page_source)
+        if match:
+            return match.group(1)
+            
+        # Generic fallback pattern for token values starting with 'NAfz'
+        match_fallback = re.search(r'"token":"(NAfz[^"]+)"', page_source)
+        if match_fallback:
+            return match_fallback.group(1)
+
+        return None
+
+    def collect_members(self, max_scroll=9999):
         driver = self.driver
-        collected = set()
+        collected = {}  # Dùng dict với key là user_id để tự động lọc trùng dữ liệu
         seen_links = set()
 
-        last_index = 0
-        xpath = "//div[@role='listitem']//a[@role='link']"
+        # Script JS gom trọn bộ dữ liệu của từng member item trong DOM
+        js_extract_members = """
+            return Array.from(document.querySelectorAll('div[role="listitem"]')).map(item => {
+                const linkElem = item.querySelector('a[role="link"][aria-label]');
+                if (!linkElem) return null;
+
+                const name = linkElem.getAttribute('aria-label') || '';
+                const href = linkElem.getAttribute('href') || '';
+
+                // Lấy link ảnh đại diện
+                const imgElem = item.querySelector('image, img');
+                let avatar = '';
+                if (imgElem) {
+                    avatar = imgElem.getAttribute('xlink:href') || imgElem.getAttribute('src') || '';
+                }
+
+                // Lấy toàn bộ văn bản (Role, Bạn chung, Thời gian gia nhập...)
+                const textLines = item.innerText ? item.innerText.split('\\n').map(t => t.trim()).filter(Boolean) : [];
+
+                return {
+                    name: name,
+                    link: href,
+                    avatar: avatar,
+                    details: textLines
+                };
+            }).filter(item => item !== null);
+        """
+
+        last_height = driver.execute_script("return document.body.scrollHeight")
+        no_change_count = 0
 
         for i in range(max_scroll):
             print(f"🔄 Scroll {i+1}")
 
-            elements = driver.find_elements(By.XPATH, xpath)
+            # Lấy danh sách chứa đầy đủ thông tin từ JavaScript
+            raw_members = driver.execute_script(js_extract_members)
 
-            if not elements:
-                print("⚠️ No elements found")
+            if not raw_members and i == 0:
+                print("⚠️ No elements found at all")
                 break
 
-            old_last = elements[-1].get_attribute("href")
-
-            new_elements = elements[last_index:]
-            last_index = len(elements)
-
-            for e in new_elements:
-                link = e.get_attribute("href")
+            for item in raw_members:
+                link = item.get("link")
 
                 if not link or link in seen_links:
                     continue
 
+                # Bỏ qua các đường link bài viết/stories/reels
                 if any(x in link for x in ["photo", "story", "reel", "watch"]):
                     continue
 
@@ -263,14 +744,31 @@ class FacebookBot:
 
                 user_id = self.extract_user_id(link)
                 if user_id:
-                    collected.add(user_id)
+                    # Gán thêm user_id vào object thông tin
+                    item["user_id"] = user_id
+                    
+                    # Lưu vào dict (nếu trùng user_id sẽ tự ghi đè/bỏ qua)
+                    collected[user_id] = item
 
+            # Cuộn xuống cuối trang
             driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-            time.sleep(1)
-            
+            time.sleep(1.5)
 
-        print(len(collected))
-        return collected
+            # Kiểm tra điều kiện dừng cuộn
+            new_height = driver.execute_script("return document.body.scrollHeight")
+            if new_height == last_height:
+                no_change_count += 1
+                if no_change_count >= 3:
+                    print("✅ Đã đến cuối danh sách, dừng thuật toán.")
+                    break
+            else:
+                no_change_count = 0
+                last_height = new_height
+
+        # Chuyển Dict thành List dữ liệu hoàn chỉnh
+        result_list = list(collected.values())
+        print(f"🎯 Hoàn thành! Thu thập được: {len(result_list)} thành viên.")
+        return result_list
 
     def perform_search(self):
         driver = self.driver
@@ -290,15 +788,15 @@ class FacebookBot:
 
         users = self.collect_members()
 
-        file_path = "users.txt"
+        file_path = "users.json"
 
+        # Lưu dữ liệu dưới dạng JSON chuẩn UTF-8
         with open(file_path, "w", encoding="utf-8") as f:
-            for u in users:
-                f.write(f"{u}\n")
+            json.dump(users, f, ensure_ascii=False, indent=4)
 
         print(f"✅ Saved {len(users)} users to {file_path}")
 
-    def close(self):
+    def close(self) -> None:
         self.driver.quit()
 
     
@@ -1056,6 +1554,102 @@ class FacebookBot:
                 time.sleep(5)
         
 
+    def save_raw_get_response(
+        self,
+        group_url=None,
+        output_file="raw_facebook_response.html",
+    ):
+        """Mở URL và lưu toàn bộ Response HTML/JS thô từ GET request vào file."""
+        def find_member_data_script(html_source: str) -> dict | None:
+                """Quét HTML page_source để lọc ra đúng JSON chứa danh sách thành viên nhóm.
+                """
+                soup = BeautifulSoup(html_source, "html.parser")
+        
+                # 1. Lọc tất cả các thẻ script có type="application/json"
+                json_scripts = soup.find_all("script", {"type": "application/json"})
+        
+                for script in json_scripts:
+                    content = script.string
+                    if not content:
+                        continue
+        
+                    # 2. Kiểm tra các từ khóa đặc trưng của Relay GraphQL Member Data
+                    if (
+                        "RelayPrefetchedStreamCache" in content
+                        and "group_member_profiles" in content
+                    ):
+                        try:
+                            # Parse nội dung thẻ script thành Python Dictionary
+                            data = json.loads(content)
+                            return data
+                        except json.JSONDecodeError:
+                            continue
+        
+                return None
+
+        if not group_url:
+            return
+
+        # Điều hướng Selenium tới URL (thực hiện yêu cầu GET)
+        self.driver.get(group_url)
+
+        # Lấy toàn bộ mã nguồn nhận được
+        raw_source = self.driver.page_source
+
+        # Ghi nguyên văn ra file HTML
+        with open(output_file, "w", encoding="utf-8") as f:
+            f.write(raw_source)
+
+        print(
+            f"[+] Đã lưu toàn bộ response thô ({len(raw_source)} ký tự) vào file: {output_file}"
+        )
+
+        return find_member_data_script(raw_source)
+
+    def extract_and_save_member_json(
+        self, output_file="group_members_raw.json"
+    ) -> bool:
+        """Lọc thẻ <script> chứa dữ liệu Relay GraphQL từ self.driver và xuất ra
+
+        file .json.
+        """
+        html_source = self.driver.page_source
+        soup = BeautifulSoup(html_source, "html.parser")
+
+        # Lọc các thẻ script có type application/json
+        scripts = soup.find_all("script", {"type": "application/json"})
+
+        target_json = None
+        for script in scripts:
+            content = script.string
+            if (
+                content
+                and "all_active_members" in content
+                and "paginated_member_sections" in content
+                and "admin_and_moderator_profiles" in content
+            ):
+                try:
+                    target_json = json.loads(content)
+                    break
+                except json.JSONDecodeError:
+                    continue
+
+        if target_json:
+            # Ghi ra file .json định dạng đàng hoàng để đọc/inspect
+            with open(output_file, "w", encoding="utf-8") as f:
+                json.dump(target_json, f, ensure_ascii=False, indent=4)
+
+            print(
+                f"[+] Đã bóc tách dữ liệu JSON thành công! Đã lưu vào file: {output_file}"
+            )
+            return True
+
+        print(
+            "[!] Không tìm thấy thẻ <script> chứa dữ liệu thành viên trong trang hiện tại."
+        )
+        return False
+
+    
 
 
 def create_excel_file(data, headers, filename="results.xlsx"):
@@ -1087,32 +1681,76 @@ uids = [
 email = 'gurasyn@gmail.com'
 password = 'saile123456!'
 
+SEARCH_KEYWORD = "ubuntu"
+
+
+def test_search_graphql_manual():
+    """Test tay GraphQL Search: lưu raw response và in chẩn đoán JSON."""
+    bot = FacebookBot(email, password)
+    try:
+        bot.ensure_login()
+        target_url = (
+            "https://www.facebook.com/search/posts/?q="
+            + urllib.parse.quote_plus(SEARCH_KEYWORD)
+        )
+        print(f"[Manual] Mở {target_url}")
+        bot.driver.get(target_url)
+        time.sleep(5)
+
+        result = bot.fetch_search_posts(SEARCH_KEYWORD, count=10)
+
+        if result.get("error"):
+            raw = result.get("raw") or ""
+            raw_path = "search_graphql_raw.txt"
+            with open(raw_path, "w", encoding="utf-8") as file:
+                file.write(raw)
+            print(f"[Manual] Lỗi: {result.get('error')}")
+            print(f"[Manual] Parse error: {result.get('parse_error')}")
+            print(f"[Manual] HTTP status: {result.get('status')}")
+            print(f"[Manual] Content-Type: {result.get('content_type')}")
+            print(f"[Manual] Raw length: {len(raw)}")
+            print(f"[Manual] BOM: {raw[:1]!r} -> {ord(raw[0]) if raw else None}")
+            print(f"[Manual] First 500: {raw[:500]!r}")
+            print(f"[Manual] Last 500: {raw[-500:]!r}")
+            print(f"[Manual] Đã lưu raw vào {raw_path}")
+            return
+
+        output_path = "search_graphql_response.json"
+        with open(output_path, "w", encoding="utf-8") as file:
+            json.dump(result, file, ensure_ascii=False, indent=2)
+
+        results = (((result.get("data") or {}).get("serpResponse") or {}).get("results") or {})
+        edges = results.get("edges") or []
+        roles = [((edge.get("node") or {}).get("role")) for edge in edges]
+        print(f"[Manual] Parse mode: {result.get('_parse_mode')}")
+        print(f"[Manual] HTTP status: {result.get('_status')}")
+        print(f"[Manual] Content-Type: {result.get('_content_type')}")
+        print(f"[Manual] Số edge: {len(edges)}")
+        print(f"[Manual] Roles: {roles}")
+        print(f"[Manual] page_info: {results.get('page_info')}")
+        print(f"[Manual] Đã lưu JSON vào {output_path}")
+    finally:
+        try:
+            input("[Manual] Nhấn Enter để đóng browser...")
+        except EOFError:
+            pass
+        try:
+            bot.close()
+        except Exception:
+            pass
+
+
 def main():
     start = time.perf_counter()
 
-    
+    # Đăng nhập
     bot = FacebookBot(email, password)
     bot.ensure_login()
 
-    link = 'https://www.facebook.com/share/v/1HjuUTp6Po/'
-    content = f'''
-        🚀 THE WIN CITY - ĐÓN SÓNG HẠ TẦNG KHU TÂY SÀI GÒN
+    time.sleep(3)
 
-        📈 Cú hích hạ tầng: Vành đai 3, 4, cao tốc TP.HCM - Mộc Bài thúc đẩy Đức Hòa - Hậu Nghĩa hóa "rồng" công nghiệp & logistics.
-        🏙️ The Win City: Tọa lạc vị trí chiến lược, đón trọn tiềm năng tăng trưởng liên vùng.
-
-        ▶️ Thông tin chi tiết: {link}
-    '''
-
-    def on_scan_data(payload):
-        if payload.get("type") == "scan_update":
-            print(f"[OUTSIDE] count={payload['count']}")
-            print(f"{len(payload['visible_posts'])}")
-
-    bot.scan_posts("Bán BOBO", keywords=["cần", "bobo"], on_data=on_scan_data)
-
-    input("")
-
+    data = bot.save_raw_get_response("https://www.facebook.com/groups/1646194296163406/members")
+    bot.extract_and_save_member_json()
     bot.close()
 
     end = time.perf_counter()
@@ -1120,4 +1758,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    if "--search-graphql" in sys.argv:
+        test_search_graphql_manual()
+    else:
+        main()

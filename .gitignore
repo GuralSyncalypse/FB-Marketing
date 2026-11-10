@@ -1,0 +1,40 @@
+/profiles/
+
+# Runtime data / cookie store (chứa cookie tài khoản)
+/storage/
+/logs/
+
+# Python
+/__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+*.pkl
+
+*.html
+*.jsonl
+*.json
+*.pkl
+*.csv
+*.xlsx
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Python packaging
+*.egg-info/
+dist/
+build/
+
+# PyInstaller
+*.spec
+
+# Jupyter Notebook
+.ipynb_checkpoints/
+
+# Environment / secrets
+.env
+.env.*
